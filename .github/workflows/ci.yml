@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: .cache/ms-playwright
+      - run: npm run check
+      - run: npm test
+
+  remote-desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build remote browser image
+        run: docker build --tag openrun-remote:local .
+      - name: Test remote input and scheduled handoff with fixtures
+        run: >-
+          docker run --rm --shm-size=1g
+          --mount "type=bind,source=$PWD/tests,target=/app/tests,readonly"
+          openrun-remote:local node tests/integration/remote-desktop.e2e.ts

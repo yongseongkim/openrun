@@ -1,0 +1,4 @@
+# Run the reverse proxy on the same host, pointing at the loopback-only app port.
+openrun.example.com {
+    reverse_proxy 127.0.0.1:4340
+}
