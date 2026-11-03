@@ -46,11 +46,17 @@ Compose는 기본적으로 `$HOME/.config/gcloud/application_default_credentials
 OPENRUN_PUBLIC_URL=https://openrun.example.com
 # 선택: 존재하는 호스트 측 ADC/WIF 파일의 절대 경로
 # OPENRUN_GOOGLE_CREDENTIALS_FILE=/absolute/path/to/credentials.json
-# 호스트의 Node/SOPS CLI도 같은 파일을 사용하려는 경우
-# GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/credentials.json
 ```
 
-마운트 경로에는 실제 파일이 있어야 합니다. 컨테이너 실행 UID가 읽을 수 있는지 확인합니다. KMS 접근 확인은 `npm run secrets:check`로 하며, 평문 값은 출력하지 않습니다.
+마운트 경로에는 실제 파일이 있어야 합니다. 컨테이너 실행 UID가 읽을 수 있는지 확인합니다. 호스트에서도 사용자 지정 ADC/WIF 파일을 쓰려면 셸에 `GOOGLE_APPLICATION_CREDENTIALS`를 export합니다. `secrets:*` 명령은 `.env`를 자동으로 읽지 않습니다.
+
+```sh
+# 사용자 지정 인증 파일을 쓰는 경우에만 실행
+export GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/credentials.json
+npm run secrets:check
+```
+
+`secrets:check`는 KMS 복호화를 확인하며 평문 값은 출력하지 않습니다.
 
 ## 3. 이미지 시작과 HTTPS
 
