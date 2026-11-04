@@ -1,4 +1,14 @@
 import { AuthError } from "../errors.ts";
+import type { WaitingJob } from "../waiting/store.ts";
+
+export async function sendWaitingNotification(webhook: string, job: WaitingJob): Promise<void> {
+  const url = new URL(webhook);
+  if (url.origin !== "https://hooks.slack.com") throw new AuthError("INVALID_SLACK_WEBHOOK", "Slack Incoming Webhook 주소를 확인해 주세요.");
+  const title = job.state === "SUCCEEDED" ? "나니요리 웨이팅 등록 완료" : job.state === "UNKNOWN" ? "나니요리 웨이팅 내역 확인 필요" : "나니요리 웨이팅 실행 결과";
+  const result = job.result ? `대기 번호: ${job.result.waitNumber}\n앞 팀 수: ${job.result.teamsAhead}\n등록 시간: ${job.result.registrationTime}` : job.message ?? "관리 화면에서 신청 상태를 확인해 주세요.";
+  const response = await fetch(url, { method: "POST", signal: AbortSignal.timeout(10000), redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: title, unfurl_links: false, unfurl_media: false, blocks: [{ type: "section", text: { type: "plain_text", text: `${title}\n${job.visitDate} ${job.slot === "am" ? "오전" : "오후"} · ${job.partySize}명\n${result}` } }] }) });
+  if (!response.ok || (await response.text()).trim() !== "ok") throw new AuthError("SLACK_NOTIFICATION_FAILED", "Slack 알림을 보내지 못했습니다.");
+}
 
 export async function sendBookingNotification(webhook: string, restaurantName: string, summary: string, viewerUrl: string): Promise<void> {
   const url = new URL(webhook);

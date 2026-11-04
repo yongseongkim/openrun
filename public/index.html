@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>가고 싶은 식탁 · OpenRun</title><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/app.js"></script></head>
-<body><header><a href="/" class="brand">OPENRUN<span>나의 예약 노트</span></a><button id="account" hidden>계정 연결 확인</button></header>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>가고 싶은 식탁 · OpenRun</title><link rel="stylesheet" href="/assets/app.css"><link rel="stylesheet" href="/assets/waiting.css"><script type="module" src="/assets/app.js"></script></head>
+<body><header><a href="/" class="brand">OPENRUN<span>예약과 웨이팅</span></a><nav class="site-nav" aria-label="서비스"><a href="/" aria-current="page">예약</a><a href="/waiting">다음날 웨이팅</a></nav><button id="account" hidden>계정 연결 확인</button></header>
 <main><section id="gate"><p class="eyebrow">MY DINING LIST</p><h1>가고 싶은 식탁,<br>하나씩 모아두세요.</h1><p id="gate-description">관리 링크를 열면 저장한 매장과 예약 요청을 확인할 수 있습니다.</p><button id="join" class="primary" hidden>나의 목록 열기</button></section>
 <div id="app" hidden><section class="intro"><div><p class="eyebrow">MY DINING LIST</p><h1>다음에 만날 식탁</h1><p>마음에 둔 매장을 모으고, 예약을 준비할 시간을 정해두세요.</p></div><button id="add" class="primary">+ 매장 추가</button></section>
 <section aria-labelledby="restaurants-title"><div class="section-heading"><h2 id="restaurants-title">가고 싶은 매장 <span id="count"></span></h2><label class="search-label"><span class="sr-only">매장 또는 셰프 검색</span><input id="search" type="search" placeholder="매장 또는 셰프 검색"></label></div><div id="restaurants" class="restaurants"></div></section>

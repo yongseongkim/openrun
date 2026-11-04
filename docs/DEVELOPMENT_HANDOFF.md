@@ -2,7 +2,9 @@
 
 ## 목표와 현재 범위
 
-절전되는 로컬 PC 대신 항상 실행되는 원격 Linux 머신에서 서비스를 운영하고 개발을 이어갑니다. 사용자가 방문 일정을 등록하면 예약 오픈 시각에 캐치테이블에 접근하는 것이 최종 목표입니다. 지금 구현된 것은 **예약 화면 준비 + 같은 서버 브라우저의 원격 인계**입니다. 최종 예약 확정, 결제, 취소의 무인 실행은 구현하지 않았습니다. 기존 `bots-on-lambda/syrupWaitingForNaniyori` 로직 이관도 남아 있습니다.
+절전되는 로컬 PC 대신 항상 실행되는 원격 Linux 머신에서 서비스를 운영하고 개발을 이어갑니다. 전체 목적은 여러 업체의 식당 예약·웨이팅 신청과 접수 시각 실행을 통합하는 것입니다. 캐치테이블은 **예약 화면 준비 + 같은 서버 브라우저의 원격 인계**, 시럽프렌즈 나니요리는 **다음날 신청 + 지정 시각 자동 제출·결과 수집**까지 구현했습니다. 캐치테이블 최종 예약 확정·결제와 공급자 취소는 아직 자동화하지 않았습니다.
+
+전체 목적과 구조는 README/AGENTS에 두고, 업체별 세부 동작은 [캐치테이블](CATCHTABLE.md), [나니요리](SYRUP_WAITING.md)에 기록합니다.
 
 ## 구현된 것
 
@@ -19,6 +21,11 @@
 | 중복 방지 | 하나의 계정·브라우저를 직렬 사용. 겹치는 10분 실행 구간 거부. 원자적 상태 전이. 진행 중 재시작은 내역 확인 상태로 전환 |
 | Slack | SOPS의 Incoming Webhook 사용. 요청에서 알림을 선택한 경우 로그인/예약 화면 링크 발송. 알림 실패로 브라우저 동작을 반복하지 않음 |
 | 저장 | Node SQLite로 매장·요청 저장. Docker named volume에 DB와 브라우저 상태 유지 |
+| 나니요리 | 원본 봇의 입력·확인·최종 제출·결과 추출 이관. 다음날 오전/오후 신청, 실행 전 취소 |
+| 시럽 연락처 | 관리 키에서 파생한 키로 AES-GCM 암호화. 마스킹 번호만 API 반환 |
+| 시럽 중복 방지 | 날짜·시간대별 활성 요청 1건, 최종 제출 전 SUBMITTING 기록, 결과 불확실 시 UNKNOWN으로 중단 |
+
+아래 예약 준비 흐름과 원격 인계 설명은 캐치테이블에 해당합니다. 시럽의 상태 흐름·인원·연락처·자동 접수는 [나니요리 문서](SYRUP_WAITING.md)를 따릅니다.
 
 실행 흐름은 `DRAFT → SCHEDULED → PREPARING → READY`입니다. 필요하면 `NEEDS_LOGIN`을 거칩니다. `READY`는 예약 화면이 준비됐다는 의미이고, `COMPLETED`는 사용자가 예약 내역 확인을 마쳤다는 의미입니다. 공급자가 검증한 예약 성공 상태는 없습니다. 만료는 `EXPIRED`, 중단·불확실성은 `INTERRUPTED`로 처리하며 자동 재예약하지 않습니다.
 
@@ -58,6 +65,9 @@
 | `src/remote/grants.ts`, `src/remote/server.ts` | 1회용 권한, 소유자 API, 정적 UI, 인증된 WebSocket→VNC |
 | `src/remote/slack.ts`, `src/remote/command.ts` | Slack 발송, 원격 로그인 요청과 관리 링크 CLI |
 | `src/app/catalog.ts`, `src/app/store.ts` | 초기 3개 매장, SQLite와 요청 상태 전이 |
+| `src/waiting/config.ts`, `src/waiting/store.ts` | 시럽 일정·KST 다음날, 연락처 암호화와 신청 영속화 |
+| `src/waiting/syrup.ts`, `src/waiting/scheduler.ts` | 원본 나니요리 접수 흐름, 단건 실행·제출 경계·결과 알림 |
+| `public/waiting.*` | 소유자 전용 다음날 웨이팅 신청·내역·실행 전 취소 |
 | `src/app/scheduler.ts` | 로그인 사전 확인, 시각에 맞춘 페이지 준비, 만료·인계 |
 | `public/app.*`, `public/index.html` | 매장·예약 요청 관리 화면 |
 | `public/viewer.*`, `public/style.css` | noVNC viewer와 모바일 입력 |
@@ -77,7 +87,7 @@ npm test
 
 Linux에서 브라우저 시스템 라이브러리가 없으면 `npx playwright install --with-deps chromium`으로 설치합니다. 테스트 브라우저 경로는 `.cache/ms-playwright`입니다. 테스트는 실제 사이트 요청을 fixture로 가로채며 계정·GCP·Slack 비밀이 필요하지 않습니다.
 
-현재 27개 테스트는 인증·계정 불일치·CAPTCHA 인계, 세션 복원, 토큰/Origin/WebSocket, SQLite 영속성·중복/겹침 거부·재시작 복구와 스케줄러 인계를 확인합니다.
+단위·브라우저 테스트는 인증·계정 불일치·CAPTCHA 인계, 세션 복원, 토큰/Origin/WebSocket, SQLite 영속성·중복/겹침 거부·재시작 복구, 시럽의 연락처 암호화·제출 경계·불확실성·결과 검증을 확인합니다.
 
 ```sh
 docker build -t openrun-remote:local .
@@ -86,7 +96,7 @@ docker run --rm --shm-size=1g \
   openrun-remote:local node tests/integration/remote-desktop.e2e.ts
 ```
 
-이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. 식당·네이버 응답은 모두 모의 처리하고 실제 예약이나 Slack 메시지는 만들지 않습니다. PR CI는 타입 검사·27개 테스트와 같은 Docker 통합 테스트를 실행합니다.
+이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. `tests/integration/waiting.e2e.ts`는 다음날 신청·취소·모의 시럽 접수·대기 번호 표시를 검증합니다. 외부 응답은 모의 처리하며 실제 예약이나 Slack 메시지를 만들지 않습니다. PR CI는 타입 검사·41개 테스트와 두 Docker 통합 테스트를 실행합니다.
 
 ## 원격 머신에서 이어갈 순서
 
@@ -95,7 +105,7 @@ docker run --rm --shm-size=1g \
 3. 새 머신에서 `remote:request`로 확인합니다. 로그인 만료·새 보안 확인이 나오면 원격 링크에서 사람이 완료합니다.
 4. HTTPS 공개 origin과 모바일 접속을 확인합니다. Slack 테스트 메시지는 사용자가 다시 명시적으로 지시할 때 한 번 발송합니다.
 5. 사용자에게 11/28 인원·시작 시간대와 무료 취소 조건을 확인한 뒤, 두 요청을 실제 오픈 시각으로 등록합니다. 아직 등록된 요청은 없습니다.
-6. 다음 구현은 매장별 인원·시간·메뉴·정책 확인, 공급자 예약 내역/확정 번호 검증, 불확실한 제출의 재시도 방지입니다. 자동 확정·결제·취소는 현재 코드가 수행하지 않습니다.
+6. 캐치테이블 다음 구현은 매장별 인원·시간·메뉴·정책 확인과 공급자 예약 내역/확정 번호 검증입니다. 시럽은 접수 시간의 실제 화면과 정책을 확인하고, 기존 Lambda/EventBridge와 중복 실행되지 않도록 전환한 뒤 사용자가 승인한 신청으로 실검증합니다.
 
 ## 알려진 운영 제약
 

@@ -37,3 +37,8 @@ jobs:
           docker run --rm --shm-size=1g
           --mount "type=bind,source=$PWD/tests,target=/app/tests,readonly"
           openrun-remote:local node tests/integration/remote-desktop.e2e.ts
+      - name: Test next-day waiting UI and Syrup registration with fixtures
+        run: >-
+          docker run --rm --shm-size=1g
+          --mount "type=bind,source=$PWD/tests,target=/app/tests,readonly"
+          openrun-remote:local node tests/integration/waiting.e2e.ts

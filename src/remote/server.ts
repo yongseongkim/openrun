@@ -11,6 +11,7 @@ import type { AuthCoordinator, LoginRequest } from "./coordinator.ts";
 import { AuthError } from "../errors.ts";
 import { AppError } from "../app/store.ts";
 import type { AppStore } from "../app/store.ts";
+import type { WaitingStore } from "../waiting/store.ts";
 
 const OWNER_COOKIE = "openrun_owner";
 
@@ -50,6 +51,7 @@ export function loginLink(origin: string, grants: GrantStore, request: LoginRequ
 export function createRemoteServer(options: {
   config: RemoteConfig; adminToken: string; coordinator: AuthCoordinator; grants: GrantStore;
   store?: AppStore;
+  waitingStore?: WaitingStore;
 }) {
   const { config, coordinator, grants } = options;
   // Viewer credentials can never be exchanged for owner access.
@@ -110,6 +112,15 @@ export function createRemoteServer(options: {
         owner(request, request.method !== "GET");
         const store = options.store;
         if (!store) throw new HttpError(503, "APP_UNAVAILABLE");
+        if (url.pathname === "/api/app/waiting" || url.pathname.startsWith("/api/app/waiting/")) {
+          const waiting = options.waitingStore;
+          if (!waiting) throw new HttpError(503, "WAITING_UNAVAILABLE");
+          if (request.method === "GET" && url.pathname === "/api/app/waiting") return json(response, 200, { ...waiting.catalog(), jobs: waiting.jobs(), timezone: "Asia/Seoul" });
+          if (request.method === "POST" && url.pathname === "/api/app/waiting") return json(response, 201, { job: waiting.schedule(await jsonBody(request)) });
+          const cancel = url.pathname.match(/^\/api\/app\/waiting\/([a-f0-9-]{36})\/cancel$/);
+          if (request.method === "POST" && cancel) { await jsonBody(request); return json(response, 200, { job: waiting.cancel(cancel[1]) }); }
+          throw new HttpError(404, "NOT_FOUND");
+        }
         if (request.method === "GET" && url.pathname === "/api/app") return json(response, 200, { restaurants: store.restaurants(), jobs: store.jobs(), serverTime: Date.now(), timezone: "Asia/Seoul", bookingMode: "ASSISTED" });
         if (request.method === "POST" && url.pathname === "/api/app/restaurants") return json(response, 201, { restaurant: store.saveRestaurant(await jsonBody(request)) });
         const restaurantMatch = url.pathname.match(/^\/api\/app\/restaurants\/([a-zA-Z0-9_-]+)$/);
@@ -183,8 +194,9 @@ export function createRemoteServer(options: {
       if (request.method !== "GET") throw new HttpError(405, "METHOD_NOT_ALLOWED");
       let filename: string | undefined;
       if (url.pathname === "/") filename = resolve(ROOT, "public/index.html");
+      else if (url.pathname === "/waiting") filename = resolve(ROOT, "public/waiting.html");
       else if (/^\/login\/[a-f0-9-]{36}$/.test(url.pathname)) filename = resolve(ROOT, "public/viewer.html");
-      else if (["/assets/viewer.js", "/assets/style.css", "/assets/app.js", "/assets/app.css"].includes(url.pathname)) filename = resolve(ROOT, "public", url.pathname.slice("/assets/".length));
+      else if (["/assets/viewer.js", "/assets/style.css", "/assets/app.js", "/assets/app.css", "/assets/waiting.js", "/assets/waiting.css"].includes(url.pathname)) filename = resolve(ROOT, "public", url.pathname.slice("/assets/".length));
       else if (url.pathname.startsWith("/vendor/novnc/")) {
         const relative = decodeURIComponent(url.pathname.slice("/vendor/novnc/".length));
         if (!/^(core|vendor)\/[a-zA-Z0-9_./-]+\.(js|wasm)$/.test(relative) || relative.split("/").includes("..")) throw new HttpError(404, "NOT_FOUND");

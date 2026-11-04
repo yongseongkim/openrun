@@ -113,6 +113,8 @@ npm run remote:request -- --notify
 
 원래 디렉터리 이름이 `openrun`이면 볼륨 이름은 보통 `openrun_openrun-data`입니다. 실제 이름은 `docker volume ls`로 확인합니다. 다른 Compose project name을 쓰면 달라집니다. 호스트의 `.auth`는 로컬 CLI 브라우저 상태이고, 운영 서버 스냅샷인 `/data/.auth`와 다릅니다.
 
+같은 SQLite에 나니요리 `waiting_jobs`도 저장됩니다. 전화번호 암호화는 `OPENRUN_ADMIN_TOKEN`에서 파생한 키를 사용하므로 DB와 같은 관리 키를 보존해야 합니다. 새 키를 발급하면 이전 연락처를 읽을 수 없습니다. 새 환경에서 시럽을 시작하기 전 기존 Lambda/EventBridge와 중복 실행하지 않도록 [나니요리 전환 안내](SYRUP_WAITING.md)도 확인합니다.
+
 이관은 **한 번에 하나의 스케줄러만 실행**하는 방식으로 합니다. 실행 중인 예약/원격 조작이 없는 때 원래 서비스를 정지한 뒤 DB를 복사합니다. 아래 명령은 실제 cutover 때 사용하며 일반 개발 검증 중에는 실행하지 않습니다.
 
 ```sh

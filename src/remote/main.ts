@@ -7,11 +7,14 @@ import { GrantStore } from "./grants.ts";
 import { PersistentAuthWorker } from "./worker.ts";
 import { AuthCoordinator } from "./coordinator.ts";
 import { createRemoteServer, loginLink } from "./server.ts";
-import { sendLoginNotification, sendBookingNotification } from "./slack.ts";
+import { sendLoginNotification, sendBookingNotification, sendWaitingNotification } from "./slack.ts";
 import { AppStore } from "../app/store.ts";
 import { BookingScheduler } from "../app/scheduler.ts";
 import { resolve } from "node:path";
 import { ROOT } from "../config.ts";
+import { WaitingStore } from "../waiting/store.ts";
+import { WaitingScheduler } from "../waiting/scheduler.ts";
+import { SyrupWorker } from "../waiting/syrup.ts";
 
 try {
   loadLocalEnvironment();
@@ -26,15 +29,23 @@ try {
   const coordinator = new AuthCoordinator(worker, config.ttlMs, typeof webhook === "string" && webhook ? async (job) => {
     await sendLoginNotification(webhook, loginLink(config.origin, grants, job), job.expiresAt);
   } : undefined);
-  const store = new AppStore(resolve(process.env.OPENRUN_DATA_DIR ?? resolve(ROOT, ".runtime"), "openrun.sqlite"));
+  const databaseFile = resolve(process.env.OPENRUN_DATA_DIR ?? resolve(ROOT, ".runtime"), "openrun.sqlite");
+  const token = adminToken(values);
+  const store = new AppStore(databaseFile);
+  const waitingStore = new WaitingStore(databaseFile, token);
   store.seed();
   const scheduler = new BookingScheduler(store, coordinator, { ready: async (job, request) => {
     if (!job.notify) return;
     if (typeof webhook !== "string" || !webhook) throw new AuthError("SLACK_NOT_CONFIGURED", "Slack Webhook 설정이 필요합니다.");
     await sendBookingNotification(webhook, store.restaurant(job.restaurantId).name, `${job.diningDate} ${job.diningTime} · ${job.partySize}명`, loginLink(config.origin, grants, request));
   } });
-  const server = createRemoteServer({ config, grants, coordinator, store, adminToken: adminToken(values) });
+  const waitingScheduler = new WaitingScheduler(waitingStore, new SyrupWorker(), { notify: async (job) => {
+    if (typeof webhook !== "string" || !webhook) throw new AuthError("SLACK_NOT_CONFIGURED", "Slack Webhook 설정이 필요합니다.");
+    await sendWaitingNotification(webhook, job);
+  } });
+  const server = createRemoteServer({ config, grants, coordinator, store, waitingStore, adminToken: token });
   scheduler.start();
+  waitingScheduler.start();
   server.listen(config.port, config.host, () => console.log(JSON.stringify({ status: "REMOTE_READY", origin: config.origin, provider: config.provider })));
   server.on("error", () => { console.error(JSON.stringify({ status: "SERVER_START_FAILED" })); process.exitCode = 1; });
   let stopping = false;
@@ -42,9 +53,10 @@ try {
     if (stopping) return;
     stopping = true;
     server.close(); server.closeAllConnections();
-    await scheduler.close();
+    await Promise.all([scheduler.close(), waitingScheduler.close()]);
     await coordinator.close();
     store.close();
+    waitingStore.close();
   };
   process.once("SIGTERM", () => { void stop(); });
   process.once("SIGINT", () => { void stop(); });
