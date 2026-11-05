@@ -96,7 +96,7 @@ docker run --rm --shm-size=1g \
   openrun-remote:local node tests/integration/remote-desktop.e2e.ts
 ```
 
-이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. `tests/integration/waiting.e2e.ts`는 다음날 신청·취소·모의 시럽 접수·대기 번호 표시를 검증합니다. 외부 응답은 모의 처리하며 실제 예약이나 Slack 메시지를 만들지 않습니다. PR CI는 타입 검사·41개 테스트와 두 Docker 통합 테스트를 실행합니다.
+이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. `tests/integration/waiting.e2e.ts`는 다음날 신청·취소·모의 시럽 접수·대기 번호 표시를 검증합니다. 외부 응답은 모의 처리하며 실제 예약이나 Slack 메시지를 만들지 않습니다. GitHub Actions CI는 사용하지 않습니다. 타입 검사·41개 테스트와 두 Docker 통합 테스트는 개발 환경에서 직접 실행합니다. 웨이팅 통합 테스트는 위 Docker 명령의 마지막 경로를 `tests/integration/waiting.e2e.ts`로 바꿔 실행합니다.
 
 ## 원격 머신에서 이어갈 순서
 
