@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>다음날 웨이팅 · OpenRun</title>
+  <link rel="stylesheet" href="/assets/app.css"><link rel="stylesheet" href="/assets/waiting.css">
+  <script type="module" src="/assets/waiting.js"></script>
+</head>
+<body>
+<header>
+  <a href="/" class="brand">OPENRUN<span>예약과 웨이팅</span></a>
+  <nav class="site-nav" aria-label="서비스"><a href="/">예약</a><a href="/waiting" aria-current="page">다음날 웨이팅</a></nav>
+</header>
+<main>
+  <section id="gate"><p class="eyebrow">TOMORROW'S TABLE</p><h1>내일의 웨이팅을<br>미리 신청하세요.</h1><p id="gate-description">관리 링크로 접속한 뒤 이 페이지를 열어 주세요.</p><a href="/" class="primary link-button">관리 화면으로</a></section>
+  <div id="waiting-app" hidden>
+    <section class="intro"><div><p class="eyebrow">TOMORROW'S TABLE</p><h1>내일, 나니요리 갈까요?</h1><p>오늘 신청해두면 내일 선택한 시각에 서버가 웨이팅을 등록합니다.</p></div><span class="tag">시럽프렌즈</span></section>
+    <div class="waiting-layout">
+      <section class="card waiting-form-card" aria-labelledby="form-title">
+        <div class="section-heading"><h2 id="form-title">다음날 웨이팅 신청</h2></div>
+        <p id="tomorrow-label" class="date-label"></p>
+        <p id="closed-notice" class="help accent" hidden>내일은 휴무 예정일입니다. 다음 영업일 전날에 신청해 주세요.</p>
+        <form id="waiting-form">
+          <fieldset id="waiting-fields">
+            <label>방문 날짜 · 한국 시간<input name="visitDate" type="date" readonly required></label>
+            <label>웨이팅 등록 시각<select name="slot" required><option value="am">오전 10:00</option><option value="pm">오후 16:00</option></select></label>
+            <label>인원<input name="partySize" type="number" min="1" max="8" required value="1"></label>
+            <label>연락처<input name="phoneNumber" type="tel" inputmode="tel" autocomplete="tel" required maxlength="20" placeholder="010-0000-0000"></label>
+            <p class="help">입력한 연락처로 시럽 웨이팅을 등록합니다. 신청 내역에는 번호 일부만 표시합니다.</p>
+            <label class="check-label"><input name="notify" type="checkbox"> 실행 결과를 Slack으로 받기</label>
+            <label class="check-label consent"><input name="confirmed" type="checkbox" required> 선택한 시각에 입력한 인원·연락처로 실제 웨이팅을 등록하는 데 동의합니다.</label>
+            <p class="form-error" role="alert"></p>
+            <button type="submit" class="primary">내일 웨이팅 신청</button>
+          </fieldset>
+        </form>
+        <p class="help last-note">서버는 신청 시각에 계속 실행되어 있어야 합니다. 접수 가능 여부와 대기 번호는 매장 상황에 따라 달라집니다. 매장 운영시간·휴무일 변경도 확인해 주세요.</p>
+        <a id="syrup-link" class="source" href="https://wait.syrupfriends.com/waiting/link/XlGXn1Qav79OJGqu" target="_blank" rel="noopener noreferrer">시럽 페이지 확인 ↗</a>
+      </section>
+      <section class="waiting-history" aria-labelledby="history-title"><div class="section-heading"><h2 id="history-title">나의 신청 내역</h2><span class="muted">한국 시간</span></div><p class="help">실행 대기 중인 신청은 취소할 수 있습니다. 이미 등록된 웨이팅의 변경·취소는 시럽에서 확인해 주세요.</p><div id="waiting-jobs"></div></section>
+    </div>
+  </div>
+  <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+</main>
+<footer>OPENRUN · 예약과 웨이팅을 한곳에서</footer>
+</body></html>

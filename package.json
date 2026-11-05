@@ -1,0 +1,26 @@
+{
+  "name": "openrun",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal restaurant reservations and scheduled waiting registration",
+  "engines": { "node": ">=26.13.0 <27" },
+  "scripts": {
+    "doctor": "node src/cli.ts doctor",
+    "browser:install": "PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright playwright install chromium",
+    "secrets:init": "node src/cli.ts secrets-init",
+    "secrets:edit": "sops secrets/catchtable.enc.json",
+    "secrets:check": "node src/cli.ts secrets-check",
+    "auth:login": "node src/cli.ts login",
+    "auth:status": "node src/cli.ts status",
+    "auth:probe": "node src/cli.ts probe",
+    "remote:setup": "node src/remote/command.ts setup",
+    "remote:request": "node src/remote/command.ts request",
+    "remote:serve": "node src/remote/main.ts",
+    "app:open": "node src/remote/command.ts console",
+    "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts"
+  },
+  "dependencies": { "@novnc/novnc": "1.7.0", "playwright": "1.64.1", "ws": "8.22.1" },
+  "devDependencies": { "@types/node": "26.6.6", "@types/ws": "8.18.2", "typescript": "7.0.2" }
+}
