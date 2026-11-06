@@ -49,8 +49,8 @@ export class BookingScheduler {
     for (const job of this.#store.jobs().sort((a, b) => a.opensAt - b.opensAt)) {
       if (!["SCHEDULED", "NEEDS_LOGIN"].includes(job.state)) continue;
       if (job.deadline <= now) { this.#store.transition(job.id, [job.state], "EXPIRED", { message: "예약 실행 시간이 지났습니다." }); continue; }
-      // Check login two minutes before opening; navigation itself starts at opensAt.
-      if (now < job.opensAt - 120_000) continue;
+      // Check login ten minutes before opening; navigation itself starts at opensAt.
+      if (now < job.opensAt - 600_000) continue;
       let authId = this.#auth.get(job.id);
       if (!authId) {
         try { authId = this.#coordinator.ensure(job.notify).id; this.#auth.set(job.id, authId); }

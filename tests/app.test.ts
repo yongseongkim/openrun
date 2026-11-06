@@ -61,17 +61,22 @@ test("requests reject paused venues, invalid dates, unzoned opening times and ex
   } finally { store.close(); }
 });
 
-test("scheduler prepares only armed due jobs; notification failure cannot replay browser actions", async () => {
+test("scheduler checks login ten minutes before opening, waits to prepare, and never replays on notification failure", async () => {
   let now = Date.now(), prepares = 0, notifications = 0;
   const store = new AppStore(":memory:", () => now); store.seed();
   const worker = new Worker(), coordinator = new AuthCoordinator(worker, 60000);
   const scheduler = new BookingScheduler(store, coordinator, { now: () => now, prepare: async () => { prepares++; }, ready: async () => { notifications++; throw new Error("Offline notification"); } });
   try {
-    const job = store.draft(input(now, { notify: true }));
+    const job = store.draft(input(now, { notify: true, opensAt: new Date(now + 11 * 60_000).toISOString() }));
     await scheduler.tick(); assert.equal(worker.calls, 0);
     store.arm(job.id);
+    now = job.opensAt - 600_001;
+    await scheduler.tick(); assert.equal(worker.calls, 0);
+    now++;
     await scheduler.tick(); await until(() => worker.calls === 1);
     await scheduler.tick(); assert.equal(prepares, 0);
+    now = job.opensAt - 1;
+    await scheduler.tick(); assert.equal(prepares, 0); assert.equal(worker.pages, 0);
     now = job.opensAt;
     const running = scheduler.tick(); await until(() => store.job(job.id).state === "READY");
     assert.equal(prepares, 1); assert.equal(notifications, 1);
