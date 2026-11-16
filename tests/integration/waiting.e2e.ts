@@ -1,26 +1,18 @@
 // Owner UI → durable request → scheduled Syrup browser → result, all fixtures.
 // No real restaurant, account, phone recipient, KMS or Slack is contacted.
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { Browser, BrowserContextOptions } from "playwright";
 import { launchBrowser } from "../../src/browser.ts";
-import { AppStore } from "../../src/app/store.ts";
-import { WaitingStore } from "../../src/waiting/store.ts";
-import { WaitingScheduler } from "../../src/waiting/scheduler.ts";
 import { registerNaniyori } from "../../src/waiting/syrup.ts";
-import { AuthCoordinator } from "../../src/remote/coordinator.ts";
-import { GrantStore } from "../../src/remote/grants.ts";
 import { remoteConfig } from "../../src/remote/config.ts";
-import { createRemoteServer } from "../../src/remote/server.ts";
+import { startWaitingService } from "../../src/waiting/service.ts";
 
 const directory = await mkdtemp(resolve(tmpdir(), "openrun-waiting-e2e-"));
 const token = "waiting-e2e-owner-token-with-sufficient-entropy";
-let now = Date.parse("2026-11-03T21:00:00+09:00"), submissions = 0;
-const app = new AppStore(resolve(directory, "state.sqlite")); app.seed();
-const waiting = new WaitingStore(resolve(directory, "state.sqlite"), token, () => now);
+let now = Date.parse("2026-11-03T21:00:00+09:00"), submissions = 0, prepares = 0;
 const automation = await launchBrowser({ headless: true, channel: "chromium" });
 const wrapped = { newContext: async (options: BrowserContextOptions) => {
   const context = await automation.newContext(options);
@@ -37,26 +29,29 @@ const wrapped = { newContext: async (options: BrowserContextOptions) => {
   });
   return context;
 } } as Browser;
-const scheduler = new WaitingScheduler(waiting, { prepare: async () => {}, run: (input, options) => registerNaniyori(wrapped, input, options), close: async () => {} }, { now: () => now, notify: async () => { throw new Error("No Slack permitted in this fixture"); } });
-const coordinator = new AuthCoordinator({ check: async () => true, login: async () => {}, close: async () => {} }, 60000);
-const config = remoteConfig(), server = createRemoteServer({ config, coordinator, grants: new GrantStore(), store: app, waitingStore: waiting, adminToken: token });
-server.listen(0, "127.0.0.1"); await once(server, "listening"); config.origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+const config = { ...remoteConfig(), port: 0 };
+const service = await startWaitingService({ config, adminToken: token, databaseFile: resolve(directory, "state.sqlite"), now: () => now,
+  runner: { prepare: async () => { prepares++; }, run: (input, options) => registerNaniyori(wrapped, input, options), close: async () => {} } });
+const { store: waiting, scheduler, server } = service;
+config.origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const client = await launchBrowser({ headless: true, channel: "chromium" });
 try {
   const page = await client.newPage({ viewport: { width: 1280, height: 1000 } });
   await page.goto(config.origin + "/waiting"); await page.locator("#gate").waitFor();
   const owner = await fetch(config.origin + "/api/console/link", { method: "POST", headers: { authorization: `Bearer ${token}` } }).then(r => r.json()) as { url: string };
-  await page.goto(owner.url); await page.getByRole("button", { name: "나의 목록 열기", exact: true }).click();
-  await page.getByRole("link", { name: "다음날 웨이팅", exact: true }).click();
-  await page.getByRole("heading", { name: "내일, 나니요리 갈까요?", exact: true }).waitFor();
+  assert.equal(new URL(owner.url).pathname, "/waiting");
+  await page.goto(owner.url); await page.getByRole("button", { name: "나의 웨이팅 열기", exact: true }).click();
+  await page.getByRole("heading", { name: "나니요리, 언제 갈까요?", exact: true }).waitFor();
+  assert.equal(await page.locator("#catchtable-nav").isVisible(), false);
   const form = page.locator("#waiting-form");
   assert.equal(await form.locator('[name="visitDate"]').inputValue(), "2026-11-04");
   assert.equal(await form.locator('[name="notify"]').isChecked(), false);
+  await form.locator('[name="visitDate"]').fill("2026-11-06");
   async function schedule() {
     await form.locator('[name="partySize"]').fill("2");
     await form.locator('[name="phoneNumber"]').fill("010-0000-1234");
     await form.locator('[name="confirmed"]').check();
-    await form.getByRole("button", { name: "내일 웨이팅 신청", exact: true }).click();
+    await form.getByRole("button", { name: "웨이팅 신청", exact: true }).click();
   }
   await schedule(); await page.locator(".badge").filter({ hasText: "실행 대기" }).waitFor();
   assert.equal(await form.locator('[name="phoneNumber"]').inputValue(), "");
@@ -64,7 +59,10 @@ try {
   await page.getByRole("button", { name: "신청 취소", exact: true }).click();
   await page.locator(".badge").filter({ hasText: "신청 취소" }).waitFor();
   await schedule(); await page.locator(".badge").filter({ hasText: "실행 대기" }).waitFor();
-  const job = waiting.pending()[0]; now = job.opensAt;
+  const job = waiting.pending()[0]; assert.equal(job.visitDate, "2026-11-06");
+  now = job.prepareAt; await scheduler.tick(); assert.equal(prepares, 1); assert.equal(submissions, 0);
+  now = job.opensAt; await scheduler.tick(); assert.equal(prepares, 1); assert.equal(submissions, 0);
+  now = job.runsAt;
   await scheduler.tick();
   assert.equal(waiting.job(job.id).state, "SUCCEEDED"); assert.equal(submissions, 1);
   await page.locator(".badge").filter({ hasText: "웨이팅 등록 완료" }).waitFor();
@@ -76,17 +74,22 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: resolve(artifacts, "waiting-mobile.png"), fullPage: true });
   now = Date.parse("2026-11-04T21:00:00+09:00"); await page.reload();
+  await page.getByRole("heading", { name: "나니요리, 언제 갈까요?", exact: true }).waitFor();
+  assert.equal(await form.locator('[name="visitDate"]').inputValue(), "2026-11-06");
+  await form.locator('[name="visitDate"]').fill("2026-11-05");
   await page.locator("#closed-notice").waitFor();
-  assert.equal(await form.getByRole("button", { name: "내일 웨이팅 신청", exact: true }).isDisabled(), true);
+  assert.equal(await form.getByRole("button", { name: "웨이팅 신청", exact: true }).isDisabled(), true);
+  assert.equal(await form.locator('[name="visitDate"]').isDisabled(), false);
+  await form.locator('[name="visitDate"]').fill("2026-11-06");
+  assert.equal(await form.getByRole("button", { name: "웨이팅 신청", exact: true }).isDisabled(), false);
   await scheduler.tick(); assert.equal(submissions, 1);
   now = Date.parse("2026-11-05T21:00:00+09:00"); await page.reload();
   await form.locator('[name="confirmed"]').check();
   now = Date.parse("2026-11-06T21:00:00+09:00");
   await page.waitForFunction(() => Array.from(document.querySelectorAll("input")).some(input => input.name === "visitDate" && input.value === "2026-11-07"));
   assert.equal(await form.locator('[name="confirmed"]').isChecked(), false);
-  console.log(JSON.stringify({ status: "WAITING_E2E_PASSED", ownerUi: true, tomorrowKst: true, encryptedContact: true, cancelBeforeRun: true, providerSubmissions: 1, reloadedResult: true, mobileLayout: true, closedDay: true, renewedDateConsent: true, liveRegistrations: 0 }));
+  console.log(JSON.stringify({ status: "WAITING_E2E_PASSED", waitingOnly: true, ownerUi: true, futureDateKst: true, warmUpBeforeOpening: true, attemptOneSecondAfterOpening: true, encryptedContact: true, cancelBeforeRun: true, providerSubmissions: 1, reloadedResult: true, mobileLayout: true, closedDay: true, renewedDateConsent: true, liveRegistrations: 0 }));
 } finally {
-  await client.close(); await scheduler.close(); await automation.close(); await coordinator.close();
-  server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); waiting.close(); app.close();
+  await client.close(); await service.stop(); await automation.close();
   await rm(directory, { recursive: true, force: true });
 }

@@ -3,7 +3,7 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { AppError } from "../app/store.ts";
-import { NANIYORI, tomorrowDate, isClosed, slotTime, waitingCatalog } from "./config.ts";
+import { NANIYORI, isClosed, slotTime, waitingCatalog, validVisitDate, WAITING_TIMING } from "./config.ts";
 import type { WaitingSlot } from "./config.ts";
 
 const Database = (sqlite as typeof sqlite & { Database: typeof sqlite.DatabaseSync }).Database;
@@ -11,7 +11,7 @@ export type WaitingState = "SCHEDULED" | "RUNNING" | "SUBMITTING" | "SUCCEEDED" 
 export type WaitingResult = { waitNumber: string; teamsAhead: string; registrationTime: string };
 export type WaitingJob = {
   id: string; restaurantId: string; visitDate: string; slot: WaitingSlot; partySize: number;
-  phoneMasked: string; opensAt: number; deadline: number; state: WaitingState; notify: boolean;
+  phoneMasked: string; opensAt: number; prepareAt: number; runsAt: number; deadline: number; state: WaitingState; notify: boolean;
   createdAt: number; updatedAt: number; result?: WaitingResult; message?: string; notification?: "SENT" | "FAILED";
 };
 type PrivateWaitingJob = WaitingJob & { phoneCiphertext: string };
@@ -33,7 +33,11 @@ export class WaitingStore {
     if (!row) throw new AppError("WAITING_NOT_FOUND", 404);
     return JSON.parse(row.body as string);
   }
-  #public(item: PrivateWaitingJob): WaitingJob { const { phoneCiphertext: _secret, ...visible } = item; return visible; }
+  #public(item: PrivateWaitingJob): WaitingJob {
+    const { phoneCiphertext: _secret, ...visible } = item;
+    // Existing DBs predate explicit warm-up and attempt times. Keep them readable.
+    return { ...visible, prepareAt: item.prepareAt ?? item.opensAt - WAITING_TIMING.prepareBeforeMs, runsAt: item.runsAt ?? item.opensAt + WAITING_TIMING.startDelayMs };
+  }
   job(id: string): WaitingJob { return this.#public(this.#private(id)); }
   catalog() { const now = this.#now(); return { ...waitingCatalog(now), serverTime: now }; }
   jobs(): WaitingJob[] { return this.#db.prepare("SELECT body FROM waiting_jobs ORDER BY opens_at DESC, rowid DESC LIMIT 200").all().map(row => this.#public(JSON.parse(row.body as string))); }
@@ -41,8 +45,10 @@ export class WaitingStore {
   schedule(input: Record<string, unknown>): WaitingJob {
     if (input.confirmed !== true) throw new AppError("WAITING_CONFIRMATION_REQUIRED");
     if (input.restaurantId !== NANIYORI.id) throw new AppError("INVALID_WAITING_RESTAURANT");
-    const now = this.#now(), date = tomorrowDate(now);
-    if (input.visitDate !== date) throw new AppError("WAITING_TOMORROW_ONLY");
+    const now = this.#now(), date = input.visitDate;
+    if (!validVisitDate(date)) throw new AppError("INVALID_WAITING_DATE");
+    const { bookingWindow } = waitingCatalog(now);
+    if (date < bookingWindow.minDate || date > bookingWindow.maxDate) throw new AppError("WAITING_DATE_OUT_OF_RANGE");
     if (isClosed(date)) throw new AppError("WAITING_CLOSED_DAY");
     if (input.slot !== "am" && input.slot !== "pm") throw new AppError("INVALID_WAITING_SLOT");
     const partySize = Number(input.partySize);
@@ -56,7 +62,7 @@ export class WaitingStore {
     const encrypted = Buffer.concat([cipher.update(phone, "utf8"), cipher.final()]);
     const phoneCiphertext = [iv, cipher.getAuthTag(), encrypted].map(part => part.toString("base64url")).join(".");
     const opensAt = slotTime(date, input.slot);
-    const item: PrivateWaitingJob = { id, restaurantId: NANIYORI.id, visitDate: date, slot: input.slot, partySize, phoneMasked: `${phone.slice(0, 3)}-****-${phone.slice(-4)}`, phoneCiphertext, opensAt, deadline: opensAt + 120000, state: "SCHEDULED", notify: input.notify === true, createdAt: now, updatedAt: now };
+    const item: PrivateWaitingJob = { id, restaurantId: NANIYORI.id, visitDate: date, slot: input.slot, partySize, phoneMasked: `${phone.slice(0, 3)}-****-${phone.slice(-4)}`, phoneCiphertext, opensAt, prepareAt: opensAt - WAITING_TIMING.prepareBeforeMs, runsAt: opensAt + WAITING_TIMING.startDelayMs, deadline: opensAt + WAITING_TIMING.receptionWindowMs, state: "SCHEDULED", notify: input.notify === true, createdAt: now, updatedAt: now };
     try {
       this.#db.prepare("INSERT INTO waiting_jobs VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, item.restaurantId, date, item.slot, item.state, opensAt, JSON.stringify(item));
     } catch (error) {

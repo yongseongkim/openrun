@@ -49,7 +49,7 @@ export function loginLink(origin: string, grants: GrantStore, request: LoginRequ
 }
 
 export function createRemoteServer(options: {
-  config: RemoteConfig; adminToken: string; coordinator: AuthCoordinator; grants: GrantStore;
+  config: RemoteConfig; adminToken: string; coordinator?: AuthCoordinator; grants: GrantStore;
   store?: AppStore;
   waitingStore?: WaitingStore;
 }) {
@@ -71,7 +71,7 @@ export function createRemoteServer(options: {
   function viewer(request: IncomingMessage) {
     origin(request, false);
     const session = grants.authenticate(cookie(request));
-    if (!session || !coordinator.get(session.requestId)) throw new HttpError(401, "VIEWER_SESSION_EXPIRED");
+    if (!session || !coordinator?.get(session.requestId)) throw new HttpError(401, "VIEWER_SESSION_EXPIRED");
     return session;
   }
   function owner(request: IncomingMessage, write = false) {
@@ -97,7 +97,7 @@ export function createRemoteServer(options: {
       if (request.method === "POST" && url.pathname === "/api/console/link") {
         administrator(request);
         const token = owners.mint("owner", Date.now() + 600_000);
-        return json(response, 200, { url: `${config.origin}/#token=${token}` });
+        return json(response, 200, { url: `${config.origin}${coordinator ? "/" : "/waiting"}#token=${token}` });
       }
       if (request.method === "POST" && url.pathname === "/api/console/exchange") {
         origin(request);
@@ -110,17 +110,17 @@ export function createRemoteServer(options: {
       }
       if (url.pathname.startsWith("/api/app")) {
         owner(request, request.method !== "GET");
-        const store = options.store;
-        if (!store) throw new HttpError(503, "APP_UNAVAILABLE");
         if (url.pathname === "/api/app/waiting" || url.pathname.startsWith("/api/app/waiting/")) {
           const waiting = options.waitingStore;
           if (!waiting) throw new HttpError(503, "WAITING_UNAVAILABLE");
-          if (request.method === "GET" && url.pathname === "/api/app/waiting") return json(response, 200, { ...waiting.catalog(), jobs: waiting.jobs(), timezone: "Asia/Seoul" });
+          if (request.method === "GET" && url.pathname === "/api/app/waiting") return json(response, 200, { ...waiting.catalog(), jobs: waiting.jobs(), timezone: "Asia/Seoul", features: { catchtable: !!coordinator && !!options.store } });
           if (request.method === "POST" && url.pathname === "/api/app/waiting") return json(response, 201, { job: waiting.schedule(await jsonBody(request)) });
           const cancel = url.pathname.match(/^\/api\/app\/waiting\/([a-f0-9-]{36})\/cancel$/);
           if (request.method === "POST" && cancel) { await jsonBody(request); return json(response, 200, { job: waiting.cancel(cancel[1]) }); }
           throw new HttpError(404, "NOT_FOUND");
         }
+        const store = options.store;
+        if (!store || !coordinator) throw new HttpError(503, "APP_UNAVAILABLE");
         if (request.method === "GET" && url.pathname === "/api/app") return json(response, 200, { restaurants: store.restaurants(), jobs: store.jobs(), serverTime: Date.now(), timezone: "Asia/Seoul", bookingMode: "ASSISTED" });
         if (request.method === "POST" && url.pathname === "/api/app/restaurants") return json(response, 201, { restaurant: store.saveRestaurant(await jsonBody(request)) });
         const restaurantMatch = url.pathname.match(/^\/api\/app\/restaurants\/([a-zA-Z0-9_-]+)$/);
@@ -146,6 +146,7 @@ export function createRemoteServer(options: {
         throw new HttpError(404, "NOT_FOUND");
       }
       if (request.method === "POST" && url.pathname === "/api/auth/ensure") {
+        if (!coordinator) throw new HttpError(404, "NOT_FOUND");
         owner(request, true);
         const body = await jsonBody(request);
         if (body.notify !== undefined && typeof body.notify !== "boolean") throw new HttpError(400, "INVALID_NOTIFY");
@@ -156,12 +157,14 @@ export function createRemoteServer(options: {
       }
       const adminRequest = url.pathname.match(/^\/api\/auth\/requests\/([a-f0-9-]{36})$/);
       if (request.method === "GET" && adminRequest) {
+        if (!coordinator) throw new HttpError(404, "NOT_FOUND");
         owner(request);
         const job = coordinator.get(adminRequest[1]);
         if (!job) throw new HttpError(404, "REQUEST_NOT_FOUND");
         return json(response, 200, { request: job });
       }
       if (request.method === "POST" && url.pathname === "/api/viewer/exchange") {
+        if (!coordinator) throw new HttpError(404, "NOT_FOUND");
         origin(request);
         const address = request.socket.remoteAddress ?? "unknown";
         const failed = failures.get(address);
@@ -179,12 +182,14 @@ export function createRemoteServer(options: {
         return json(response, 200, { expiresAt: session.expiresAt });
       }
       if (request.method === "GET" && url.pathname === "/api/viewer/status") {
+        if (!coordinator) throw new HttpError(404, "NOT_FOUND");
         const session = viewer(request);
         const job = coordinator.get(session.requestId)!;
         const booking = job.bookingId && options.store ? options.store.job(job.bookingId) : undefined;
         return json(response, 200, { request: job, ...(booking ? { booking: { ...booking, restaurantName: options.store!.restaurant(booking.restaurantId).name } } : {}) });
       }
       if (request.method === "POST" && url.pathname === "/api/viewer/finish") {
+        if (!coordinator) throw new HttpError(404, "NOT_FOUND");
         origin(request); const session = viewer(request); const body = await jsonBody(request);
         if (body.confirmed !== true) throw new HttpError(400, "CONFIRMATION_REQUIRED");
         coordinator.finishReservation(session.requestId);
@@ -192,12 +197,13 @@ export function createRemoteServer(options: {
       }
 
       if (request.method !== "GET") throw new HttpError(405, "METHOD_NOT_ALLOWED");
+      if (url.pathname === "/" && !coordinator) { response.writeHead(302, { location: "/waiting" }); response.end(); return; }
       let filename: string | undefined;
       if (url.pathname === "/") filename = resolve(ROOT, "public/index.html");
       else if (url.pathname === "/waiting") filename = resolve(ROOT, "public/waiting.html");
-      else if (/^\/login\/[a-f0-9-]{36}$/.test(url.pathname)) filename = resolve(ROOT, "public/viewer.html");
+      else if (coordinator && /^\/login\/[a-f0-9-]{36}$/.test(url.pathname)) filename = resolve(ROOT, "public/viewer.html");
       else if (["/assets/viewer.js", "/assets/style.css", "/assets/app.js", "/assets/app.css", "/assets/waiting.js", "/assets/waiting.css"].includes(url.pathname)) filename = resolve(ROOT, "public", url.pathname.slice("/assets/".length));
-      else if (url.pathname.startsWith("/vendor/novnc/")) {
+      else if (coordinator && url.pathname.startsWith("/vendor/novnc/")) {
         const relative = decodeURIComponent(url.pathname.slice("/vendor/novnc/".length));
         if (!/^(core|vendor)\/[a-zA-Z0-9_./-]+\.(js|wasm)$/.test(relative) || relative.split("/").includes("..")) throw new HttpError(404, "NOT_FOUND");
         filename = resolve(ROOT, "node_modules/@novnc/novnc", relative);
@@ -215,6 +221,7 @@ export function createRemoteServer(options: {
 
   server.on("upgrade", (request, socket, head) => {
     try {
+      if (!coordinator) throw new HttpError(404, "NOT_FOUND");
       const url = new URL(request.url ?? "/", config.origin);
       if (url.pathname !== "/desktop/socket" || url.search) throw new HttpError(404, "NOT_FOUND");
       origin(request);
@@ -251,9 +258,9 @@ export function createRemoteServer(options: {
     }
   });
   const changed = (job: LoginRequest) => {
-    if (!coordinator.canControl(job.id)) for (const [ws, session] of sockets) if (session.requestId === job.id) ws.close(1000, "Remote access ended");
+    if (!coordinator?.canControl(job.id)) for (const [ws, session] of sockets) if (session.requestId === job.id) ws.close(1000, "Remote access ended");
   };
-  coordinator.on("change", changed);
-  server.once("close", () => { coordinator.off("change", changed); for (const ws of sockets.keys()) ws.terminate(); wss.close(); });
+  coordinator?.on("change", changed);
+  server.once("close", () => { coordinator?.off("change", changed); for (const ws of sockets.keys()) ws.terminate(); wss.close(); });
   return server;
 }

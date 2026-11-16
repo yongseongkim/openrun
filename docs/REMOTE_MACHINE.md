@@ -1,5 +1,46 @@
 # 상시 원격 머신 실행 및 상태 이관
 
+## OCI에서 나니요리만 실행
+
+현재 우선 배포는 **OCI 인스턴스 1대 + 시럽 전용 Compose + SQLite 지속 볼륨**입니다. 캐치테이블 계정·로그인·Chrome 프로필·VNC 없이 `/waiting` 웹 신청과 시럽 스케줄러만 실행합니다. DB에 저장한 날짜·시간대만 실행하며 매일 무조건 웨이팅을 넣는 반복 설정은 없습니다. 기존 Lambda/SSM을 호출하지 않습니다.
+
+OCI의 Ubuntu 인스턴스에 Docker Engine/Compose를 설치하고 Docker가 부팅 시 시작하도록 설정합니다. amd64와 Ampere arm64에서 같은 Dockerfile을 사용하며 브라우저는 인스턴스의 아키텍처에 맞게 설치합니다. [Playwright 지원 OS/아키텍처](https://playwright.dev/docs/intro#system-requirements), [Ubuntu용 Docker 설치](https://docs.docker.com/engine/install/ubuntu/)를 참고합니다. 호스트 시계의 NTP 동기화도 확인합니다. 호스트 시간대가 UTC여도 앱은 KST를 명시적으로 계산합니다.
+
+```sh
+sudo systemctl enable --now docker
+timedatectl show -p NTPSynchronized --value
+```
+
+아래 공통 **1. 소스와 개발 환경**, **2. 운영 설정과 KMS 접근**을 먼저 준비합니다. 기존 SOPS 파일의 `OPENRUN_ADMIN_TOKEN`과 필요한 경우 `SLACK_WEBHOOK_URL`을 유지합니다. 시럽에는 `NAVER_*`나 `KAKAO_*` 값이 필요하지 않습니다. 새 파일은 `secrets:init` 후 `npm run waiting:setup`으로 관리 키를 만들 수 있습니다. `secrets:check`는 캐치테이블 계정 검사이므로 계정 없이 시럽만 쓰는 경우 생략합니다. 시럽 서비스의 기동과 관리 링크 발급이 KMS·관리 키 접근을 확인합니다.
+
+`.env`에는 실제 HTTPS 도메인과 존재하는 Google ADC/WIF 파일 경로를 지정합니다. 같은 머신에 기존 통합 서비스가 있다면 앱 포트를 겹치게 시작하지 않습니다. OCI의 별도 머신에서 기본 포트는 4340입니다. 공개 80/443은 reverse proxy, 4340은 로컬 접속에 사용합니다. [OCI 네트워크·호스트 방화벽 안내](https://docs.oracle.com/en-us/iaas/Content/Security/Reference/compute_security.htm)에 맞춰 필요한 웹·SSH 접근을 설정합니다.
+
+```sh
+docker compose -f compose.waiting.yaml config --quiet
+docker compose -f compose.waiting.yaml up -d --build
+curl --fail --silent --show-error http://127.0.0.1:4340/healthz
+docker compose -f compose.waiting.yaml ps
+docker compose -f compose.waiting.yaml exec -T waiting npm run waiting:open
+```
+
+시럽 전용 이미지에는 Node/SOPS/Chromium이 있고 가상 데스크톱 실행기는 없습니다. 출력된 1회용 관리 링크를 PC·휴대폰에서 열고 **나의 웨이팅 열기**로 접속합니다. 만료됐거나 서비스가 재시작되면 마지막 명령으로 새 링크를 발급합니다. HTTPS는 아래 **3. 이미지 시작과 HTTPS**의 Caddy 설정을 적용합니다. 공개 도메인을 준비하기 전에는 같은 절의 SSH 터널로 테스트할 수 있습니다.
+
+웹에서 내일~30일 뒤 사이의 날짜·오전/오후·인원·연락처를 신청하면 DB에 저장됩니다. 오전 신청이면 방문일 09:58에 브라우저를 준비하고 10:00:01부터 접수를 시도합니다. 오후는 15:58/16:00:01입니다. 결과는 DB와 웹에 남고 선택한 신청만 Slack으로 알립니다. 서비스는 매일 DB를 확인하며, 작업이 없으면 브라우저를 띄우지 않고 완료·취소 후에도 브라우저를 닫습니다.
+
+Compose의 `restart: unless-stopped`는 컨테이너 종료·Docker 재시작 후 서비스를 다시 실행합니다. 운영자가 명시적으로 정지한 서비스는 자동으로 다시 켜지지 않습니다. [Docker 재시작 정책](https://docs.docker.com/engine/containers/start-containers-automatically/)과 같습니다. `healthz`는 HTTP 프로세스 상태이며 시럽의 실제 접수 성공을 뜻하지 않습니다. 일회성 접수는 `SCHEDULED` DB 상태를 기준으로 실행하고, 제출 결과가 불확실한 요청은 재시작 후에도 반복하지 않습니다.
+
+프로젝트 이름은 `openrun-waiting`, 기본 볼륨은 `openrun-waiting_waiting-data`, DB 경로는 `/data/app/openrun.sqlite`입니다. 통합 모드의 `openrun-data`와 별도이므로 기존 DB는 자동 이관되지 않습니다. 기존 요청을 옮길 때는 기존 서비스를 멈추고 SQLite와 WAL/SHM을 일관되게 복사하는 아래 이관 절차를 적용하며 같은 관리 키를 보존합니다. `down -v`로 볼륨을 지우지 않습니다.
+
+```sh
+docker compose -f compose.waiting.yaml logs --tail 30 waiting
+# 진행 중인 접수가 없는 때 코드 업데이트 후 실행
+docker compose -f compose.waiting.yaml up -d --build
+```
+
+실제 운영 전환 전에는 기존 Lambda/EventBridge와 이 서비스가 같은 날짜·시간대를 동시에 접수하지 않도록 전환해야 합니다. 개발·모의 테스트 과정에서는 기존 Lambda, SSM 설정, 운영 컨테이너와 데이터를 변경하지 않습니다. 이 저장소에는 OCI 계정·인스턴스 생성이나 자동 배포 기능은 포함하지 않으며, 실제 SSH 대상·도메인·KMS 접근은 배포 환경에서 준비해야 합니다.
+
+이후의 기본 `docker compose` 명령과 캐치테이블 로그인/프로필 이관 설명은 **통합 모드**에 해당합니다. 시럽 전용 운영에서는 위 `-f compose.waiting.yaml` 명령을 사용하고 캐치테이블 로그인 단계는 건너뜁니다.
+
 ## 실행 구조와 준비
 
 원격 Linux 머신에서 Docker Compose 서비스 하나를 계속 실행합니다. 브라우저도 그 머신 안에서 실행되며, PC·휴대폰은 화면과 입력을 전달하는 클라이언트입니다. 로컬 PC의 절전 여부는 이관이 완료된 원격 서비스에 영향을 주지 않습니다.

@@ -4,6 +4,8 @@ OpenRun은 **가고 싶은 식당과 방문 일정을 등록해두면 예약·�
 
 서비스는 항상 켜져 있는 원격 머신에서 실행합니다. PC·휴대폰은 신청 관리와 필요한 인증을 담당하고, 실행 시각에 사용자의 로컬 PC가 켜져 있을 필요는 없습니다.
 
+현재 우선 운영 대상은 **OCI 인스턴스의 나니요리 시럽 웨이팅**입니다. `compose.waiting.yaml`은 캐치테이블 로그인·가상 데스크톱 없이 웹·SQLite·시럽 스케줄러만 실행합니다. 서비스는 매일 켜져 있고, DB에 신청한 날짜·시간대가 있을 때만 접수합니다.
+
 ## 전체 흐름
 
 1. 웹에서 매장, 방문 날짜·인원, 예약 또는 웨이팅 조건을 입력합니다.
@@ -35,11 +37,11 @@ flowchart LR
 | 업체 | 신청 내용 | 현재 실행 범위 |
 | --- | --- | --- |
 | 캐치테이블 | 매장, 방문 날짜·시간·인원, 예약을 준비할 시각 | 로그인·세션 재사용 → 매장 페이지 준비 → 원격 화면 인계. 시간·인원 최종 선택과 예약 확정·결제는 사용자 진행 |
-| 시럽프렌즈 · 나니요리 | 다음날 방문 날짜, 오전/오후, 인원, 연락처 | 지정 시각에 인원·전화번호 입력 → 확인 → 최종 제출 → 완료 화면의 대기 번호·앞 팀 수·등록 시간 수집 |
+| 시럽프렌즈 · 나니요리 | 내일~30일 뒤의 방문 날짜, 오전/오후, 인원, 연락처 | 2분 전 브라우저 준비 → 정각 1초 뒤 인원·전화번호 입력 → 확인 → 최종 제출 → 완료 화면의 대기 번호·앞 팀 수·등록 시간 수집 |
 
-캐치테이블 초기 목록은 **모수 서울·노뜨르·베수비오**입니다. 나니요리는 별도의 **다음날 웨이팅** 화면에서 신청합니다. 나니요리 실행 흐름은 기존 [bots-on-lambda/syrupWaitingForNaniyori](https://github.com/yongseongkim/bots-on-lambda/tree/main/syrupWaitingForNaniyori)에서 이관했습니다.
+캐치테이블 초기 목록은 **모수 서울·노뜨르·베수비오**입니다. 나니요리는 별도의 **웨이팅** 화면(`/waiting`)에서 날짜별로 신청합니다. 나니요리 실행 흐름은 기존 [bots-on-lambda/syrupWaitingForNaniyori](https://github.com/yongseongkim/bots-on-lambda/tree/main/syrupWaitingForNaniyori)에서 이관했습니다.
 
-나니요리 기본 접수 시각은 기존 운영 설정의 **10:00 / 16:00 KST**, 휴무 예정일은 **월·목**입니다. 현재 다음날 신청만 받으며, 같은 날짜·시간대의 활성 신청은 하나만 저장합니다. 이 값은 매장의 최신 접수 가능 여부를 보장하지 않으므로 운영 변경은 별도로 확인합니다.
+나니요리 기본 접수 시각은 기존 운영 설정의 **10:00 / 16:00 KST**, 휴무 예정일은 **월·목**입니다. 기존 Lambda처럼 **09:58/15:58에 준비하고 10:00:01/16:00:01부터 시도**합니다. 같은 날짜·시간대의 활성 신청은 하나만 저장합니다. 이 값은 매장의 최신 접수 가능 여부를 보장하지 않으므로 운영 변경은 별도로 확인합니다.
 
 ## 시스템 구성
 
@@ -52,13 +54,22 @@ flowchart LR
 | 시럽 실행기 | 로그인 없는 별도 브라우저 context에서 나니요리 접수. 최종 제출 직전 상태를 기록 |
 | Slack | 사용자가 선택한 신청의 로그인 필요·예약 준비·웨이팅 실행 결과 알림 |
 | SOPS · GCP KMS | 계정·관리 키·Webhook·캐치테이블 인증 스냅샷 암호화 |
-| Docker Compose | 원격 머신의 단일 서비스, Chromium·Xvfb·x11vnc, 지속 데이터 볼륨 |
+| Docker Compose | 원격 머신의 단일 서비스와 지속 데이터 볼륨. 시럽 전용 모드는 headless Chromium, 통합 모드는 Xvfb·x11vnc도 포함 |
 
-Node **26.13.0**, native TypeScript, Playwright를 사용합니다. 서비스 프로세스는 하나이고 DB는 로컬 SQLite입니다. 캐치테이블의 계정 프로필과 시럽의 임시 context는 분리합니다. 운영 DB·프로필·인증 상태는 Docker의 `openrun-data` 볼륨에 유지합니다.
+Node **26.13.0**, native TypeScript, Playwright를 사용합니다. 서비스 프로세스는 하나이고 DB는 로컬 SQLite입니다. 캐치테이블의 계정 프로필과 시럽의 임시 context는 분리합니다. 시럽 전용 DB는 `waiting-data`, 통합 모드의 DB·프로필·인증 상태는 `openrun-data` 볼륨에 유지합니다. 신청 일정·인원·연락처·실행 결과는 DB에 저장하며 AWS Parameter Store나 EventBridge를 사용하지 않습니다.
 
 웨이팅 전화번호는 SOPS에서 읽은 관리 키로 파생한 키를 사용해 AES-GCM으로 암호화합니다. 화면과 API에는 마스킹한 번호만 표시합니다. DB를 이관할 때 같은 관리 키도 필요합니다.
 
 ## 실행
+
+나니요리만 OCI에서 운영할 때는 기존 SOPS/GCP KMS 설정을 준비한 뒤 아래 구성을 사용합니다. 네이버·카카오 계정은 필요하지 않습니다. [OCI 시럽 전용 실행 안내](docs/REMOTE_MACHINE.md#oci에서-나니요리만-실행)를 따릅니다.
+
+```sh
+docker compose -f compose.waiting.yaml up -d --build
+docker compose -f compose.waiting.yaml exec -T waiting npm run waiting:open
+```
+
+아래는 캐치테이블까지 함께 실행하는 통합 구성입니다.
 
 Node/SOPS, Docker Compose, GCP KMS 접근을 준비한 뒤 실행합니다. 실제 비밀 파일은 공개 저장소에 포함하지 않습니다.
 
@@ -73,7 +84,7 @@ docker compose up -d --build
 npm run app:open
 ```
 
-기존 SOPS 파일을 전달받았다면 `secrets:init`은 생략합니다. 관리 링크를 열고 **예약** 또는 **다음날 웨이팅**으로 이동합니다. 외부 PC·휴대폰 접속은 HTTPS 공개 주소가 필요하며, 설치·설정·이관 순서는 [원격 머신 실행 문서](docs/REMOTE_MACHINE.md)를 따릅니다.
+기존 SOPS 파일을 전달받았다면 `secrets:init`은 생략합니다. 관리 링크를 열고 **예약** 또는 **웨이팅**으로 이동합니다. 외부 PC·휴대폰 접속은 HTTPS 공개 주소가 필요하며, 설치·설정·이관 순서는 [원격 머신 실행 문서](docs/REMOTE_MACHINE.md)를 따릅니다.
 
 ## 상태와 실행 원칙
 
@@ -95,7 +106,7 @@ npm test
 
 - [개발 지침과 전체 구조](AGENTS.md)
 - [캐치테이블 로그인·예약 준비](docs/CATCHTABLE.md)
-- [나니요리 이관·다음날 웨이팅](docs/SYRUP_WAITING.md)
+- [나니요리 이관·날짜별 웨이팅](docs/SYRUP_WAITING.md)
 - [원격 실행·설정·상태 이관](docs/REMOTE_MACHINE.md)
 - [구현 상태와 미정 작업 인계](docs/DEVELOPMENT_HANDOFF.md)
 

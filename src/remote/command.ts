@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { secretsPath } from "../config.ts";
 import { decryptJson, encryptJson } from "../sops.ts";
 import { AuthError, publicError } from "../errors.ts";
-import { adminToken, remoteConfig, loadLocalEnvironment } from "./config.ts";
+import { adminToken, remoteConfig, loadLocalEnvironment, publicOrigin } from "./config.ts";
 import type { LoginRequest } from "./coordinator.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -13,7 +13,8 @@ try {
   loadLocalEnvironment();
   const command = process.argv[2];
   const path = secretsPath();
-  const values = await decryptJson(path) as Record<string, unknown>;
+  const values = command !== "setup" && process.env.OPENRUN_ADMIN_TOKEN && !process.env.OPENRUN_SECRETS_FILE
+    ? {} : await decryptJson(path) as Record<string, unknown>;
   if (command === "setup") {
     const token = values.OPENRUN_ADMIN_TOKEN;
     if (token !== undefined && token !== "" && (typeof token !== "string" || token.length < 32)) throw new AuthError("INVALID_ADMIN_TOKEN", "OPENRUN_ADMIN_TOKEN은 32자 이상의 임의 문자열이어야 합니다.");
@@ -31,7 +32,8 @@ try {
     console.log(JSON.stringify({ status: "REMOTE_CONFIGURED", message: "기존 계정 정보는 유지했습니다. Slack 알림은 SOPS 파일의 SLACK_WEBHOOK_URL을 설정한 뒤 --notify로 요청합니다." }));
   } else if (command === "console") {
     const config = remoteConfig();
-    const response = await fetch(`${config.origin}/api/console/link`, { method: "POST", signal: AbortSignal.timeout(10000), headers: { authorization: `Bearer ${adminToken(values)}` } });
+    const endpoint = publicOrigin(process.env.OPENRUN_API_URL ?? config.origin);
+    const response = await fetch(`${endpoint}/api/console/link`, { method: "POST", signal: AbortSignal.timeout(10000), headers: { authorization: `Bearer ${adminToken(values)}` } });
     if (!response.ok) throw new AuthError("REMOTE_REQUEST_FAILED", "원격 서버 주소와 인증 설정을 확인해 주세요.");
     console.log(JSON.stringify(await response.json()));
   } else if (command === "request") {

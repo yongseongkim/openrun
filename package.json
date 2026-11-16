@@ -18,6 +18,9 @@
     "remote:request": "node src/remote/command.ts request",
     "remote:serve": "node src/remote/main.ts",
     "app:open": "node src/remote/command.ts console",
+    "waiting:serve": "node src/waiting/main.ts",
+    "waiting:setup": "node src/remote/command.ts setup",
+    "waiting:open": "node src/remote/command.ts console",
     "check": "tsc --noEmit",
     "test": "node --test tests/*.test.ts"
   },

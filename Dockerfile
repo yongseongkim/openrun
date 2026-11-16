@@ -1,4 +1,4 @@
-FROM node:26.13.0-bookworm-slim
+FROM node:26.13.0-bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
     DISPLAY=:99 \
@@ -11,7 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     OPENRUN_BROWSER_CHANNEL=chromium
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl xvfb x11vnc x11-utils openbox tini \
+    ca-certificates curl tini \
     && rm -rf /var/lib/apt/lists/*
 RUN arch="$(dpkg --print-architecture)" \
     && curl -fsSL "https://github.com/getsops/sops/releases/download/v3.13.2/sops-v3.13.2.linux.${arch}" -o /tmp/sops \
@@ -26,9 +26,21 @@ RUN npm ci --omit=dev && npx playwright install --with-deps chromium \
 COPY --chown=node:node src ./src
 COPY --chown=node:node public ./public
 COPY --chown=node:node .sops.yaml ./
+USER node
+EXPOSE 4340
+
+# OCI can run Syrup alone without a virtual desktop or Catchtable login.
+FROM runtime AS waiting
+ENTRYPOINT ["tini", "-g", "--"]
+CMD ["node", "src/waiting/main.ts"]
+
+# Keep the existing default image and Compose deployment compatible.
+FROM runtime AS remote
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb x11vnc x11-utils openbox && rm -rf /var/lib/apt/lists/*
 COPY --chown=node:node deploy/entrypoint.sh ./deploy/entrypoint.sh
 RUN chmod 755 /app/deploy/entrypoint.sh
 USER node
-EXPOSE 4340
 ENTRYPOINT ["tini", "-g", "--", "/app/deploy/entrypoint.sh"]
 CMD ["node", "src/remote/main.ts"]
