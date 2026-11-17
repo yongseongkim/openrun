@@ -1,10 +1,10 @@
-# 개발 인계 — 2026-11-16
+# 개발 인계 — 2026-11-18
 
 ## 현재 우선순위: OCI의 나니요리 시럽 웨이팅
 
-캐치테이블의 추가 자동화는 미루고 나니요리 웹 신청과 DB 기반 실행을 먼저 운영합니다. `compose.waiting.yaml` / Docker target `waiting` / `src/waiting/main.ts`는 캐치테이블 없이 웹·API·SQLite·스케줄러만 실행합니다. 내일~30일 뒤의 날짜·AM/PM·인원·연락처를 웹에서 저장하며, 기존 Lambda처럼 09:58/15:58에 Chromium을 준비하고 10:00:01/16:00:01부터 시도합니다. 신청이 없는 날에는 접수하지 않습니다.
+캐치테이블의 추가 자동화는 미루고 나니요리 웹 신청과 DB 기반 실행을 먼저 운영합니다. 기존 `homelab-infra`의 OCI k3s와 공용 PostgreSQL을 사용하며 `openrun` 전용 DB·계정을 두는 구성이 기준입니다. Docker target `waiting` / `src/waiting/main.ts`는 캐치테이블 없이 웹·API·PostgreSQL·스케줄러를 연결합니다. 내일~30일 뒤의 날짜·AM/PM·인원·연락처를 저장하며, 기존 Lambda처럼 09:58/15:58에 Chromium을 준비하고 10:00:01/16:00:01부터 시도합니다. 신청이 없는 날에는 접수하지 않습니다.
 
-준비 후 취소·실행 완료 시 브라우저를 닫고, 재시작 후 미실행 미래 일정은 이어 처리합니다. 기존 DB에 준비·시도 시각 필드가 없어도 읽을 수 있습니다. 운영 설치·KMS·HTTPS·볼륨은 [OCI 시럽 전용 안내](REMOTE_MACHINE.md#oci에서-나니요리만-실행)를 따릅니다. OCI SSH 대상·도메인은 아직 제공되지 않았으며 실제 인스턴스 배포·기존 Lambda 중지·실제 웨이팅 등록은 수행하지 않았습니다.
+신청(`waiting_requests`)과 실행 이력(`waiting_attempts`)을 트랜잭션으로 저장합니다. 전용 DB 세션의 advisory lock을 얻은 서버만 복구·실행하며 연결을 잃으면 브라우저와 서비스를 중단합니다. 준비 후 취소·실행 완료 시 브라우저를 닫고, 재시작 후 미실행 미래 일정은 이어 처리합니다. `DATABASE_URL`이 필수이며 `waiting:db:migrate`를 먼저 적용합니다. [DB 역할·마이그레이션 안내](POSTGRESQL.md)와 [OCI 시럽 전용 안내](REMOTE_MACHINE.md#oci에서-나니요리만-실행)를 따릅니다. 운영 공용 DB 생성·기존 SQLite 이관·Helm/ArgoCD 연결·Lambda 중지·실제 웨이팅 등록은 수행하지 않았습니다.
 
 ## 목표와 현재 범위
 
@@ -16,7 +16,7 @@
 
 | 영역 | 현재 동작 |
 | --- | --- |
-| 런타임 | Node 26.13.0, native TypeScript, Playwright 1.64.1. Docker의 Linux Chromium은 headed로 실행 |
+| 런타임 | Node 26.13.0, native TypeScript, Playwright 1.64.1. 캐치테이블은 headed, 시럽은 headless Chromium |
 | 인증 | 네이버 기본, 카카오 지원. SOPS 자격 증명으로 한 번 입력 후 CAPTCHA·추가 인증은 사람이 완료 |
 | 세션 | 같은 Chrome 프로필 재사용. 유효하지 않으면 SOPS로 저장한 cookies/localStorage/IndexedDB/sessionStorage 복원 시도. 계정 식별자 불일치는 차단 |
 | 원격 화면 | Xvfb + Openbox + x11vnc + noVNC. PC/휴대폰 브라우저에서 서버 Chrome을 직접 조작 |
@@ -26,10 +26,10 @@
 | 스케줄러 | 1초 간격, 실행 10분 전부터 로그인 확인, 실행 시각 이후 매장 페이지에 방문 날짜 쿼리 전달. 최종 시간·인원 선택은 사람이 확인 |
 | 중복 방지 | 하나의 계정·브라우저를 직렬 사용. 겹치는 10분 실행 구간 거부. 원자적 상태 전이. 진행 중 재시작은 내역 확인 상태로 전환 |
 | Slack | SOPS의 Incoming Webhook 사용. 요청에서 알림을 선택한 경우 로그인/예약 화면 링크 발송. 알림 실패로 브라우저 동작을 반복하지 않음 |
-| 저장 | Node SQLite로 매장·요청 저장. Docker named volume에 DB와 브라우저 상태 유지 |
+| 저장 | 운영 시럽은 PostgreSQL. 기존 캐치테이블 통합 모드와 명시적 로컬 모의 테스트는 SQLite. 연락처 암호화 형식은 공통 |
 | 나니요리 | 원본 봇의 입력·확인·최종 제출·결과 추출 이관. 날짜별 오전/오후 신청, 실행 전 취소. 시럽 전용 상시 실행 지원 |
 | 시럽 연락처 | 관리 키에서 파생한 키로 AES-GCM 암호화. 마스킹 번호만 API 반환 |
-| 시럽 중복 방지 | 날짜·시간대별 활성 요청 1건, 최종 제출 전 SUBMITTING 기록, 결과 불확실 시 UNKNOWN으로 중단 |
+| 시럽 중복 방지 | 날짜·시간대별 활성 요청 unique index, 단일 DB 세션 실행권, 상태·이력 동시 커밋, 최종 제출 전 SUBMITTING, 불확실 시 UNKNOWN |
 
 아래 예약 준비 흐름과 원격 인계 설명은 캐치테이블에 해당합니다. 시럽의 상태 흐름·인원·연락처·자동 접수는 [나니요리 문서](SYRUP_WAITING.md)를 따릅니다.
 
@@ -78,8 +78,10 @@
 | `src/remote/slack.ts`, `src/remote/command.ts` | Slack 발송, 원격 로그인 요청과 관리 링크 CLI |
 | `src/app/catalog.ts`, `src/app/store.ts` | 초기 3개 매장, SQLite와 요청 상태 전이 |
 | `src/waiting/config.ts`, `src/waiting/store.ts` | 시럽 일정·KST 신청 날짜 범위, 연락처 암호화와 신청 영속화 |
+| `src/waiting/model.ts`, `src/waiting/postgres-store.ts` | 공통 검증·암호화·저장소 인터페이스, PostgreSQL 신청·실행 이력과 실행권 |
+| `src/waiting/database.ts`, `src/waiting/migrate.ts`, `src/waiting/migrations/` | PostgreSQL 풀·설정·버전 SQL migration |
 | `src/waiting/syrup.ts`, `src/waiting/scheduler.ts` | 원본 나니요리 접수 흐름, 단건 실행·제출 경계·결과 알림 |
-| `src/waiting/service.ts`, `src/waiting/main.ts`, `compose.waiting.yaml` | OCI 시럽 전용 서비스와 영속 볼륨 |
+| `src/waiting/service.ts`, `src/waiting/main.ts`, `compose.waiting.yaml` | PostgreSQL 기반 시럽 전용 서비스. 앱 데이터 볼륨 불필요 |
 | `public/waiting.*` | 소유자 전용 날짜별 웨이팅 신청·내역·실행 전 취소 |
 | `src/app/scheduler.ts` | 로그인 사전 확인, 시각에 맞춘 페이지 준비, 만료·인계 |
 | `public/app.*`, `public/index.html` | 매장·예약 요청 관리 화면 |
@@ -109,7 +111,7 @@ docker run --rm --shm-size=1g \
   openrun-remote:local node tests/integration/remote-desktop.e2e.ts
 ```
 
-이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. `tests/integration/waiting.e2e.ts`는 시럽 전용 관리 링크·미래 날짜 신청·취소·2분 전 준비·정각 1초 뒤 모의 접수·대기 번호 표시를 검증합니다. `waiting-daemon.e2e.ts`는 실제 시럽 전용 진입점·내부 CLI·프로세스 재시작 후 DB 복원을 확인합니다. 외부 응답은 모의 처리하며 실제 예약이나 Slack 메시지를 만들지 않습니다. GitHub Actions CI는 사용하지 않습니다. 타입 검사·43개 테스트와 세 Docker 통합 테스트는 개발 환경에서 직접 실행합니다. 시럽 전용 Docker 빌드·테스트 명령은 [나니요리 검증 안내](SYRUP_WAITING.md#운영-전환과-검증)를 따릅니다.
+이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. `tests/integration/waiting.e2e.ts`는 관리 링크·미래 날짜 신청·취소·2분 전 준비·정각 1초 뒤 모의 접수·결과 표시를 검증합니다. `waiting-daemon.e2e.ts`는 실제 진입점·내부 CLI·프로세스 재시작 후 DB 복원을 확인합니다. `npm run test:postgres`는 임시 PostgreSQL 18을 만들어 10개 저장소/트랜잭션/실행권/최소 권한 테스트와 두 시럽 통합 테스트를 실행합니다. 기존 `npm test` 43개와 원격 데스크톱 통합 테스트도 유지합니다. 외부 응답은 모의 처리하며 실제 예약이나 Slack 메시지를 만들지 않습니다. GitHub Actions CI는 사용하지 않습니다. [PostgreSQL 검증 안내](POSTGRESQL.md#백업이관과-테스트)를 참고합니다.
 
 ## 원격 머신에서 이어갈 순서
 

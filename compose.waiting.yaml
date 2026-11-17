@@ -11,11 +11,11 @@ services:
       - "127.0.0.1:${OPENRUN_PORT:-4340}:4340"
     environment:
       OPENRUN_PUBLIC_URL: ${OPENRUN_PUBLIC_URL:-http://localhost:4340}
+      DATABASE_URL: ${DATABASE_URL:-}
       OPENRUN_API_URL: http://127.0.0.1:4340
       OPENRUN_SECRETS_FILE: /run/secrets/catchtable.enc.json
       GOOGLE_APPLICATION_CREDENTIALS: /run/google/credentials.json
     volumes:
-      - waiting-data:/data
       - type: bind
         source: ./secrets/catchtable.enc.json
         target: /run/secrets/catchtable.enc.json
@@ -40,5 +40,3 @@ services:
       timeout: 5s
       start_period: 90s
       retries: 3
-volumes:
-  waiting-data:

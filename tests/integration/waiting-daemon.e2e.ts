@@ -18,9 +18,11 @@ const port = (listener.address() as { port: number }).port;
 await new Promise<void>(done => listener.close(() => done()));
 const origin = `http://127.0.0.1:${port}`, publicOrigin = "https://openrun-fixture.example";
 const key = "waiting-daemon-disposable-owner-key-for-fixtures";
+const databaseUrl = process.env.OPENRUN_TEST_DATABASE_URL;
+if (!databaseUrl || !new URL(databaseUrl).pathname.startsWith("/openrun_test")) throw new Error("Use npm run test:postgres with its disposable test database");
 const env = { ...process.env, OPENRUN_HOST: "127.0.0.1", OPENRUN_PORT: String(port), OPENRUN_DATA_DIR: directory,
   OPENRUN_PUBLIC_URL: publicOrigin, OPENRUN_API_URL: origin, OPENRUN_ADMIN_TOKEN: key,
-  OPENRUN_SECRETS_FILE: "", SLACK_WEBHOOK_URL: "", CATCHTABLE_AUTH_PROVIDER: "naver" };
+  OPENRUN_SECRETS_FILE: "", SLACK_WEBHOOK_URL: "", CATCHTABLE_AUTH_PROVIDER: "naver", DATABASE_URL: databaseUrl };
 const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 let child: ChildProcess | undefined;
 async function boot() {

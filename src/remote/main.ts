@@ -45,7 +45,7 @@ try {
   } });
   const server = createRemoteServer({ config, grants, coordinator, store, waitingStore, adminToken: token });
   scheduler.start();
-  waitingScheduler.start();
+  await waitingScheduler.start();
   server.listen(config.port, config.host, () => console.log(JSON.stringify({ status: "REMOTE_READY", origin: config.origin, provider: config.provider })));
   server.on("error", () => { console.error(JSON.stringify({ status: "SERVER_START_FAILED" })); process.exitCode = 1; });
   let stopping = false;

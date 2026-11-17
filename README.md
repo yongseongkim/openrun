@@ -4,7 +4,7 @@ OpenRun은 **가고 싶은 식당과 방문 일정을 등록해두면 예약·�
 
 서비스는 항상 켜져 있는 원격 머신에서 실행합니다. PC·휴대폰은 신청 관리와 필요한 인증을 담당하고, 실행 시각에 사용자의 로컬 PC가 켜져 있을 필요는 없습니다.
 
-현재 우선 운영 대상은 **OCI 인스턴스의 나니요리 시럽 웨이팅**입니다. `compose.waiting.yaml`은 캐치테이블 로그인·가상 데스크톱 없이 웹·SQLite·시럽 스케줄러만 실행합니다. 서비스는 매일 켜져 있고, DB에 신청한 날짜·시간대가 있을 때만 접수합니다.
+현재 우선 운영 대상은 **OCI k3s의 나니요리 시럽 웨이팅**입니다. 기존 homelab의 공용 PostgreSQL에 `openrun` 전용 DB를 두고, Docker target `waiting`은 캐치테이블 로그인·가상 데스크톱 없이 웹·시럽 스케줄러만 실행합니다. 서비스는 매일 켜져 있고, DB에 신청한 날짜·시간대가 있을 때만 접수합니다. `compose.waiting.yaml`로도 같은 PostgreSQL 저장 계층을 사용해 독립 실행할 수 있습니다.
 
 ## 전체 흐름
 
@@ -18,7 +18,7 @@ OpenRun은 **가고 싶은 식당과 방문 일정을 등록해두면 예약·�
 flowchart LR
   User["PC · 휴대폰"] --> Web["웹 관리 화면"]
   Web --> API["소유자 인증 API"]
-  API --> DB["SQLite · 요청과 상태"]
+  API --> DB["시럽 PostgreSQL · 캐치테이블 SQLite"]
   DB --> CT["캐치테이블 스케줄러"]
   DB --> Syrup["시럽 웨이팅 스케줄러"]
   CT --> Chrome["인증된 지속 Chrome"]
@@ -48,24 +48,27 @@ flowchart LR
 | 구성 요소 | 역할 |
 | --- | --- |
 | 웹 · API | 매장/예약/웨이팅 신청, 소유자 접근 권한, 요청 상태 조회 |
-| SQLite | 캐치테이블 예약 준비와 시럽 웨이팅 요청의 영속 저장·중복 방지 |
+| PostgreSQL | 시럽 신청·실행 이력·결과 저장, 중복 신청 방지와 스케줄러 실행권 관리 |
+| SQLite | 기존 캐치테이블 예약 준비와 명시적인 로컬 모의 테스트 저장소 |
 | 업체별 스케줄러 | 접수 시각 판단, 실행 준비, 만료·중단·불확실한 결과 처리 |
 | 캐치테이블 실행기 | 하나의 계정·지속 프로필을 직렬 사용하고 필요하면 noVNC로 사람에게 인계 |
 | 시럽 실행기 | 로그인 없는 별도 브라우저 context에서 나니요리 접수. 최종 제출 직전 상태를 기록 |
 | Slack | 사용자가 선택한 신청의 로그인 필요·예약 준비·웨이팅 실행 결과 알림 |
 | SOPS · GCP KMS | 계정·관리 키·Webhook·캐치테이블 인증 스냅샷 암호화 |
-| Docker Compose | 원격 머신의 단일 서비스와 지속 데이터 볼륨. 시럽 전용 모드는 headless Chromium, 통합 모드는 Xvfb·x11vnc도 포함 |
+| Docker · k3s | 시럽 전용 서비스와 공용 PostgreSQL 연결. 통합 모드는 Xvfb·x11vnc와 지속 데이터 볼륨도 사용 |
 
-Node **26.13.0**, native TypeScript, Playwright를 사용합니다. 서비스 프로세스는 하나이고 DB는 로컬 SQLite입니다. 캐치테이블의 계정 프로필과 시럽의 임시 context는 분리합니다. 시럽 전용 DB는 `waiting-data`, 통합 모드의 DB·프로필·인증 상태는 `openrun-data` 볼륨에 유지합니다. 신청 일정·인원·연락처·실행 결과는 DB에 저장하며 AWS Parameter Store나 EventBridge를 사용하지 않습니다.
+Node **26.13.0**, native TypeScript, Playwright를 사용합니다. 운영 시럽 데이터는 `DATABASE_URL`이 가리키는 PostgreSQL에 저장하고 앱 Pod는 데이터 볼륨 없이 교체할 수 있습니다. 신청과 실행 이력은 별도 테이블에 기록하며 최종 제출 직전 상태까지 트랜잭션으로 저장합니다. 전용 DB 세션의 advisory lock으로 스케줄러와 복구 실행을 하나로 제한합니다. 통합 모드의 기존 SQLite·캐치테이블 프로필·인증 상태는 `openrun-data`에 남습니다. AWS Parameter Store나 EventBridge를 사용하지 않습니다.
 
 웨이팅 전화번호는 SOPS에서 읽은 관리 키로 파생한 키를 사용해 AES-GCM으로 암호화합니다. 화면과 API에는 마스킹한 번호만 표시합니다. DB를 이관할 때 같은 관리 키도 필요합니다.
 
 ## 실행
 
-나니요리만 OCI에서 운영할 때는 기존 SOPS/GCP KMS 설정을 준비한 뒤 아래 구성을 사용합니다. 네이버·카카오 계정은 필요하지 않습니다. [OCI 시럽 전용 실행 안내](docs/REMOTE_MACHINE.md#oci에서-나니요리만-실행)를 따릅니다.
+나니요리만 OCI에서 운영할 때는 PostgreSQL DB/계정과 `DATABASE_URL`, 관리 키를 먼저 준비합니다. 환경 변수/Kubernetes Secret 또는 기존 SOPS/GCP KMS 파일을 사용합니다. 네이버·카카오 계정은 필요하지 않습니다. [PostgreSQL 설정과 마이그레이션](docs/POSTGRESQL.md), [OCI 시럽 전용 실행 안내](docs/REMOTE_MACHINE.md#oci에서-나니요리만-실행)를 따릅니다.
 
 ```sh
-docker compose -f compose.waiting.yaml up -d --build
+docker compose -f compose.waiting.yaml build
+docker compose -f compose.waiting.yaml run --rm --no-deps waiting npm run waiting:db:migrate
+docker compose -f compose.waiting.yaml up -d --no-build
 docker compose -f compose.waiting.yaml exec -T waiting npm run waiting:open
 ```
 
@@ -100,11 +103,13 @@ npm run app:open
 npm run browser:install
 npm run check
 npm test
+npm run test:postgres
 ```
 
 테스트는 모의 업체 응답을 사용합니다. 실제 계정·전화 수신자·예약·결제·Slack을 대상으로 검증하지 않습니다. GitHub Actions CI는 사용하지 않으며, 타입 검사·단위 테스트와 Docker 통합 테스트는 개발 환경에서 직접 실행합니다. 통합 테스트 실행 방법은 [개발 인계 문서](docs/DEVELOPMENT_HANDOFF.md#개발-및-검증)를 참고합니다.
 
 - [개발 지침과 전체 구조](AGENTS.md)
+- [PostgreSQL·DB 계정·마이그레이션·테스트](docs/POSTGRESQL.md)
 - [캐치테이블 로그인·예약 준비](docs/CATCHTABLE.md)
 - [나니요리 이관·날짜별 웨이팅](docs/SYRUP_WAITING.md)
 - [원격 실행·설정·상태 이관](docs/REMOTE_MACHINE.md)

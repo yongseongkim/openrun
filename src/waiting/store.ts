@@ -1,25 +1,19 @@
+// SQLite adapter retained for local fixtures and existing combined deployments.
+// Production waiting-only deployments use PostgresWaitingStore.
 import * as sqlite from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { AppError } from "../app/store.ts";
-import { NANIYORI, isClosed, slotTime, waitingCatalog, validVisitDate, WAITING_TIMING } from "./config.ts";
-import type { WaitingSlot } from "./config.ts";
+import { waitingCatalog } from "./config.ts";
+import { WaitingContactCipher, createWaitingJob, publicWaitingJob } from "./model.ts";
+import type { WaitingJob, WaitingState, PrivateWaitingJob, WaitingPatch, WaitingRepository } from "./model.ts";
+export type { WaitingJob, WaitingState, WaitingResult } from "./model.ts";
 
 const Database = (sqlite as typeof sqlite & { Database: typeof sqlite.DatabaseSync }).Database;
-export type WaitingState = "SCHEDULED" | "RUNNING" | "SUBMITTING" | "SUCCEEDED" | "UNKNOWN" | "FAILED" | "EXPIRED" | "CANCELLED" | "INTERRUPTED";
-export type WaitingResult = { waitNumber: string; teamsAhead: string; registrationTime: string };
-export type WaitingJob = {
-  id: string; restaurantId: string; visitDate: string; slot: WaitingSlot; partySize: number;
-  phoneMasked: string; opensAt: number; prepareAt: number; runsAt: number; deadline: number; state: WaitingState; notify: boolean;
-  createdAt: number; updatedAt: number; result?: WaitingResult; message?: string; notification?: "SENT" | "FAILED";
-};
-type PrivateWaitingJob = WaitingJob & { phoneCiphertext: string };
-export class WaitingStore {
-  #db: sqlite.DatabaseSync; #key: Buffer; #now: () => number;
+export class WaitingStore implements WaitingRepository {
+  #db: sqlite.DatabaseSync; #cipher: WaitingContactCipher; #now: () => number;
   constructor(filename: string, adminToken: string, now = Date.now) {
-    if (adminToken.length < 32) throw new AppError("WAITING_KEY_REQUIRED", 500);
-    this.#key = createHmac("sha256", adminToken).update("openrun:waiting:phone:v1").digest(); this.#now = now;
+    this.#cipher = new WaitingContactCipher(adminToken); this.#now = now;
     if (filename !== ":memory:") mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
     this.#db = new Database(filename);
     if (filename !== ":memory:") chmodSync(filename, 0o600);
@@ -33,60 +27,28 @@ export class WaitingStore {
     if (!row) throw new AppError("WAITING_NOT_FOUND", 404);
     return JSON.parse(row.body as string);
   }
-  #public(item: PrivateWaitingJob): WaitingJob {
-    const { phoneCiphertext: _secret, ...visible } = item;
-    // Existing DBs predate explicit warm-up and attempt times. Keep them readable.
-    return { ...visible, prepareAt: item.prepareAt ?? item.opensAt - WAITING_TIMING.prepareBeforeMs, runsAt: item.runsAt ?? item.opensAt + WAITING_TIMING.startDelayMs };
-  }
-  job(id: string): WaitingJob { return this.#public(this.#private(id)); }
+  job(id: string): WaitingJob { return publicWaitingJob(this.#private(id)); }
   catalog() { const now = this.#now(); return { ...waitingCatalog(now), serverTime: now }; }
-  jobs(): WaitingJob[] { return this.#db.prepare("SELECT body FROM waiting_jobs ORDER BY opens_at DESC, rowid DESC LIMIT 200").all().map(row => this.#public(JSON.parse(row.body as string))); }
-  pending(): WaitingJob[] { return this.#db.prepare("SELECT body FROM waiting_jobs WHERE state='SCHEDULED' ORDER BY opens_at, rowid").all().map(row => this.#public(JSON.parse(row.body as string))); }
+  jobs(): WaitingJob[] { return this.#db.prepare("SELECT body FROM waiting_jobs ORDER BY opens_at DESC, rowid DESC LIMIT 200").all().map(row => publicWaitingJob(JSON.parse(row.body as string))); }
+  pending(): WaitingJob[] { return this.#db.prepare("SELECT body FROM waiting_jobs WHERE state='SCHEDULED' ORDER BY opens_at, rowid").all().map(row => publicWaitingJob(JSON.parse(row.body as string))); }
   schedule(input: Record<string, unknown>): WaitingJob {
-    if (input.confirmed !== true) throw new AppError("WAITING_CONFIRMATION_REQUIRED");
-    if (input.restaurantId !== NANIYORI.id) throw new AppError("INVALID_WAITING_RESTAURANT");
-    const now = this.#now(), date = input.visitDate;
-    if (!validVisitDate(date)) throw new AppError("INVALID_WAITING_DATE");
-    const { bookingWindow } = waitingCatalog(now);
-    if (date < bookingWindow.minDate || date > bookingWindow.maxDate) throw new AppError("WAITING_DATE_OUT_OF_RANGE");
-    if (isClosed(date)) throw new AppError("WAITING_CLOSED_DAY");
-    if (input.slot !== "am" && input.slot !== "pm") throw new AppError("INVALID_WAITING_SLOT");
-    const partySize = Number(input.partySize);
-    if (!Number.isInteger(partySize) || partySize < 1 || partySize > NANIYORI.maxPartySize) throw new AppError("INVALID_PARTY_SIZE");
-    if (typeof input.phoneNumber !== "string" || !/^[0-9 -]{10,20}$/.test(input.phoneNumber)) throw new AppError("INVALID_WAITING_PHONE");
-    const phone = input.phoneNumber.replace(/[ -]/g, "");
-    if (!/^01[016789]\d{7,8}$/.test(phone)) throw new AppError("INVALID_WAITING_PHONE");
-    if (input.notify !== undefined && typeof input.notify !== "boolean") throw new AppError("INVALID_NOTIFY");
-    const id = randomUUID(), iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", this.#key, iv);
-    cipher.setAAD(Buffer.from(id));
-    const encrypted = Buffer.concat([cipher.update(phone, "utf8"), cipher.final()]);
-    const phoneCiphertext = [iv, cipher.getAuthTag(), encrypted].map(part => part.toString("base64url")).join(".");
-    const opensAt = slotTime(date, input.slot);
-    const item: PrivateWaitingJob = { id, restaurantId: NANIYORI.id, visitDate: date, slot: input.slot, partySize, phoneMasked: `${phone.slice(0, 3)}-****-${phone.slice(-4)}`, phoneCiphertext, opensAt, prepareAt: opensAt - WAITING_TIMING.prepareBeforeMs, runsAt: opensAt + WAITING_TIMING.startDelayMs, deadline: opensAt + WAITING_TIMING.receptionWindowMs, state: "SCHEDULED", notify: input.notify === true, createdAt: now, updatedAt: now };
-    try {
-      this.#db.prepare("INSERT INTO waiting_jobs VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, item.restaurantId, date, item.slot, item.state, opensAt, JSON.stringify(item));
-    } catch (error) {
+    const item = createWaitingJob(input, this.#now(), this.#cipher);
+    try { this.#db.prepare("INSERT INTO waiting_jobs VALUES (?, ?, ?, ?, ?, ?, ?)").run(item.id, item.restaurantId, item.visitDate, item.slot, item.state, item.opensAt, JSON.stringify(item)); }
+    catch (error) {
       if ((error as { errcode?: number }).errcode === 2067 || String((error as Error).message).includes("UNIQUE constraint")) throw new AppError("WAITING_ALREADY_EXISTS", 409);
       throw error;
     }
-    return this.#public(item);
+    return publicWaitingJob(item);
   }
-  phone(id: string): string {
-    const item = this.#private(id);
-    try {
-      const [iv, tag, data] = item.phoneCiphertext.split(".").map(part => Buffer.from(part, "base64url"));
-      const decipher = createDecipheriv("aes-256-gcm", this.#key, iv); decipher.setAAD(Buffer.from(id)); decipher.setAuthTag(tag);
-      return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
-    } catch { throw new AppError("WAITING_CONTACT_UNAVAILABLE", 500); }
-  }
-  transition(id: string, from: WaitingState[], state: WaitingState, patch: Partial<Pick<WaitingJob, "message" | "result">> = {}): WaitingJob {
+  phone(id: string): string { return this.#cipher.decrypt(this.#private(id)); }
+  transition(id: string, from: WaitingState[], state: WaitingState, patch: WaitingPatch = {}): WaitingJob {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
       const old = this.#private(id);
       if (!from.includes(old.state)) throw new AppError("WAITING_STATE_CHANGED", 409);
       const item = { ...old, ...patch, state, updatedAt: this.#now() };
       this.#db.prepare("UPDATE waiting_jobs SET state=?, body=? WHERE id=?").run(state, JSON.stringify(item), id);
-      this.#db.exec("COMMIT"); return this.#public(item);
+      this.#db.exec("COMMIT"); return publicWaitingJob(item);
     } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
   }
   cancel(id: string): WaitingJob { return this.transition(id, ["SCHEDULED"], "CANCELLED", { message: "자동 실행 신청을 취소했습니다. 이미 시럽에 등록된 웨이팅은 별도로 확인해 주세요." }); }
@@ -100,5 +62,5 @@ export class WaitingStore {
       this.transition(item.id, [item.state], item.state === "SUBMITTING" ? "UNKNOWN" : "INTERRUPTED", { message: "실행 중 서버가 재시작됐습니다. 시럽 웨이팅 내역 확인 전 재신청하지 마세요." });
     }
   }
-  close() { this.#db.close(); this.#key.fill(0); }
+  close() { this.#db.close(); this.#cipher.close(); }
 }

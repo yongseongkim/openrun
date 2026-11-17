@@ -11,7 +11,7 @@ import type { AuthCoordinator, LoginRequest } from "./coordinator.ts";
 import { AuthError } from "../errors.ts";
 import { AppError } from "../app/store.ts";
 import type { AppStore } from "../app/store.ts";
-import type { WaitingStore } from "../waiting/store.ts";
+import type { WaitingRepository } from "../waiting/model.ts";
 
 const OWNER_COOKIE = "openrun_owner";
 
@@ -51,7 +51,7 @@ export function loginLink(origin: string, grants: GrantStore, request: LoginRequ
 export function createRemoteServer(options: {
   config: RemoteConfig; adminToken: string; coordinator?: AuthCoordinator; grants: GrantStore;
   store?: AppStore;
-  waitingStore?: WaitingStore;
+  waitingStore?: WaitingRepository;
 }) {
   const { config, coordinator, grants } = options;
   // Viewer credentials can never be exchanged for owner access.
@@ -113,10 +113,10 @@ export function createRemoteServer(options: {
         if (url.pathname === "/api/app/waiting" || url.pathname.startsWith("/api/app/waiting/")) {
           const waiting = options.waitingStore;
           if (!waiting) throw new HttpError(503, "WAITING_UNAVAILABLE");
-          if (request.method === "GET" && url.pathname === "/api/app/waiting") return json(response, 200, { ...waiting.catalog(), jobs: waiting.jobs(), timezone: "Asia/Seoul", features: { catchtable: !!coordinator && !!options.store } });
-          if (request.method === "POST" && url.pathname === "/api/app/waiting") return json(response, 201, { job: waiting.schedule(await jsonBody(request)) });
+          if (request.method === "GET" && url.pathname === "/api/app/waiting") return json(response, 200, { ...waiting.catalog(), jobs: await waiting.jobs(), timezone: "Asia/Seoul", features: { catchtable: !!coordinator && !!options.store } });
+          if (request.method === "POST" && url.pathname === "/api/app/waiting") return json(response, 201, { job: await waiting.schedule(await jsonBody(request)) });
           const cancel = url.pathname.match(/^\/api\/app\/waiting\/([a-f0-9-]{36})\/cancel$/);
-          if (request.method === "POST" && cancel) { await jsonBody(request); return json(response, 200, { job: waiting.cancel(cancel[1]) }); }
+          if (request.method === "POST" && cancel) { await jsonBody(request); return json(response, 200, { job: await waiting.cancel(cancel[1]) }); }
           throw new HttpError(404, "NOT_FOUND");
         }
         const store = options.store;

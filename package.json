@@ -21,9 +21,11 @@
     "waiting:serve": "node src/waiting/main.ts",
     "waiting:setup": "node src/remote/command.ts setup",
     "waiting:open": "node src/remote/command.ts console",
+    "waiting:db:migrate": "node src/waiting/migrate.ts",
+    "test:postgres": "node scripts/test-postgres.ts",
     "check": "tsc --noEmit",
     "test": "node --test tests/*.test.ts"
   },
-  "dependencies": { "@novnc/novnc": "1.7.0", "playwright": "1.64.1", "ws": "8.22.1" },
-  "devDependencies": { "@types/node": "26.6.6", "@types/ws": "8.18.2", "typescript": "7.0.2" }
+  "dependencies": { "@novnc/novnc": "1.7.0", "pg": "8.23.1", "playwright": "1.64.1", "ws": "8.22.1" },
+  "devDependencies": { "@types/node": "26.6.6", "@types/pg": "8.23.1", "@types/ws": "8.18.2", "typescript": "7.0.2" }
 }

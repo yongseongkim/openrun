@@ -2,7 +2,11 @@
 
 ## OCI에서 나니요리만 실행
 
-현재 우선 배포는 **OCI 인스턴스 1대 + 시럽 전용 Compose + SQLite 지속 볼륨**입니다. 캐치테이블 계정·로그인·Chrome 프로필·VNC 없이 `/waiting` 웹 신청과 시럽 스케줄러만 실행합니다. DB에 저장한 날짜·시간대만 실행하며 매일 무조건 웨이팅을 넣는 반복 설정은 없습니다. 기존 Lambda/SSM을 호출하지 않습니다.
+현재 우선 배포 대상은 **기존 OCI k3s + 공용 PostgreSQL의 `openrun` 전용 DB**입니다. 앱은 캐치테이블 계정·Chrome 프로필·VNC·앱 데이터 PVC 없이 `/waiting` 웹 신청과 시럽 스케줄러만 실행합니다. DB에 저장한 날짜·시간대만 실행하며 매일 무조건 웨이팅을 넣는 반복 설정은 없습니다. 기존 Lambda/SSM을 호출하지 않습니다. DB 역할·스키마·백업은 [PostgreSQL 안내](POSTGRESQL.md)를 먼저 따릅니다.
+
+k3s에서는 `DATABASE_URL`, `OPENRUN_ADMIN_TOKEN`, 필요한 경우 `SLACK_WEBHOOK_URL`을 SOPS로 관리하는 Kubernetes Secret에서 환경 변수로 주입합니다. 앱 Pod는 1개, 배포 전략은 `Recreate`로 두고 migration Job을 먼저 완료합니다. DB 주소 `postgres.database.svc.cluster.local:5432`는 클러스터 내부에서 사용합니다. OpenRun의 Helm/ArgoCD 배포 연결과 운영 DB 생성은 이 코드 변경에서 자동 수행하지 않습니다.
+
+아래 Compose 명령은 독립 실행 참고 구성입니다. 이 경우 컨테이너에서 실제로 접근 가능한 PostgreSQL 주소가 필요하며 k3s 내부 DNS명을 외부 Docker에서 그대로 사용할 수 있다고 가정하지 않습니다.
 
 OCI의 Ubuntu 인스턴스에 Docker Engine/Compose를 설치하고 Docker가 부팅 시 시작하도록 설정합니다. amd64와 Ampere arm64에서 같은 Dockerfile을 사용하며 브라우저는 인스턴스의 아키텍처에 맞게 설치합니다. [Playwright 지원 OS/아키텍처](https://playwright.dev/docs/intro#system-requirements), [Ubuntu용 Docker 설치](https://docs.docker.com/engine/install/ubuntu/)를 참고합니다. 호스트 시계의 NTP 동기화도 확인합니다. 호스트 시간대가 UTC여도 앱은 KST를 명시적으로 계산합니다.
 
@@ -17,7 +21,9 @@ timedatectl show -p NTPSynchronized --value
 
 ```sh
 docker compose -f compose.waiting.yaml config --quiet
-docker compose -f compose.waiting.yaml up -d --build
+docker compose -f compose.waiting.yaml build
+docker compose -f compose.waiting.yaml run --rm --no-deps waiting npm run waiting:db:migrate
+docker compose -f compose.waiting.yaml up -d --no-build
 curl --fail --silent --show-error http://127.0.0.1:4340/healthz
 docker compose -f compose.waiting.yaml ps
 docker compose -f compose.waiting.yaml exec -T waiting npm run waiting:open
@@ -29,7 +35,7 @@ docker compose -f compose.waiting.yaml exec -T waiting npm run waiting:open
 
 Compose의 `restart: unless-stopped`는 컨테이너 종료·Docker 재시작 후 서비스를 다시 실행합니다. 운영자가 명시적으로 정지한 서비스는 자동으로 다시 켜지지 않습니다. [Docker 재시작 정책](https://docs.docker.com/engine/containers/start-containers-automatically/)과 같습니다. `healthz`는 HTTP 프로세스 상태이며 시럽의 실제 접수 성공을 뜻하지 않습니다. 일회성 접수는 `SCHEDULED` DB 상태를 기준으로 실행하고, 제출 결과가 불확실한 요청은 재시작 후에도 반복하지 않습니다.
 
-프로젝트 이름은 `openrun-waiting`, 기본 볼륨은 `openrun-waiting_waiting-data`, DB 경로는 `/data/app/openrun.sqlite`입니다. 통합 모드의 `openrun-data`와 별도이므로 기존 DB는 자동 이관되지 않습니다. 기존 요청을 옮길 때는 기존 서비스를 멈추고 SQLite와 WAL/SHM을 일관되게 복사하는 아래 이관 절차를 적용하며 같은 관리 키를 보존합니다. `down -v`로 볼륨을 지우지 않습니다.
+시럽 전용 앱은 `DATABASE_URL`을 사용하고 자체 DB 볼륨을 만들지 않습니다. 기존 `openrun-waiting_waiting-data`나 통합 모드의 `openrun-data`가 있다면 별도로 보존합니다. SQLite 요청은 PostgreSQL에 자동 이관되지 않습니다. 기존 데이터를 옮길 때는 원본의 일관된 백업과 같은 관리 키를 보존하고 실행 내역을 먼저 확인합니다. 운영 PostgreSQL은 정기 백업과 복구 시험을 준비합니다. `down -v`로 기존 볼륨을 지우지 않습니다.
 
 ```sh
 docker compose -f compose.waiting.yaml logs --tail 30 waiting
@@ -154,7 +160,7 @@ npm run remote:request -- --notify
 
 원래 디렉터리 이름이 `openrun`이면 볼륨 이름은 보통 `openrun_openrun-data`입니다. 실제 이름은 `docker volume ls`로 확인합니다. 다른 Compose project name을 쓰면 달라집니다. 호스트의 `.auth`는 로컬 CLI 브라우저 상태이고, 운영 서버 스냅샷인 `/data/.auth`와 다릅니다.
 
-같은 SQLite에 나니요리 `waiting_jobs`도 저장됩니다. 전화번호 암호화는 `OPENRUN_ADMIN_TOKEN`에서 파생한 키를 사용하므로 DB와 같은 관리 키를 보존해야 합니다. 새 키를 발급하면 이전 연락처를 읽을 수 없습니다. 새 환경에서 시럽을 시작하기 전 기존 Lambda/EventBridge와 중복 실행하지 않도록 [나니요리 전환 안내](SYRUP_WAITING.md)도 확인합니다.
+기존 통합 모드의 SQLite에는 나니요리 `waiting_jobs`도 저장됩니다. 새 시럽 전용 모드의 PostgreSQL과 자동으로 합쳐지지 않습니다. 전화번호 암호화는 `OPENRUN_ADMIN_TOKEN`에서 파생한 키를 사용하므로 DB와 같은 관리 키를 보존해야 합니다. 새 키를 발급하면 이전 연락처를 읽을 수 없습니다. 새 환경에서 시럽을 시작하기 전 기존 Lambda/EventBridge와 중복 실행하지 않도록 [나니요리 전환 안내](SYRUP_WAITING.md)도 확인합니다.
 
 이관은 **한 번에 하나의 스케줄러만 실행**하는 방식으로 합니다. 실행 중인 예약/원격 조작이 없는 때 원래 서비스를 정지한 뒤 DB를 복사합니다. 아래 명령은 실제 cutover 때 사용하며 일반 개발 검증 중에는 실행하지 않습니다.
 

@@ -19,7 +19,7 @@ const wrapped = { newContext: async (options: BrowserContextOptions) => {
   await context.route("**/*", async route => {
     if (new URL(route.request().url()).pathname === "/fixture-submit") {
       submissions++;
-      assert.equal(waiting.jobs().some(job => job.state === "SUBMITTING"), true);
+      assert.equal((await waiting.jobs()).some(job => job.state === "SUBMITTING"), true);
       assert.deepEqual(route.request().postDataJSON(), { partySize: 2, phoneNumber: "01000001234" });
       await route.fulfill({ json: { ok: true } }); return;
     }
@@ -30,7 +30,8 @@ const wrapped = { newContext: async (options: BrowserContextOptions) => {
   return context;
 } } as Browser;
 const config = { ...remoteConfig(), port: 0 };
-const service = await startWaitingService({ config, adminToken: token, databaseFile: resolve(directory, "state.sqlite"), now: () => now,
+const database = process.env.OPENRUN_TEST_DATABASE_URL ? { databaseUrl: process.env.OPENRUN_TEST_DATABASE_URL } : { databaseFile: resolve(directory, "state.sqlite") };
+const service = await startWaitingService({ config, adminToken: token, ...database, now: () => now,
   runner: { prepare: async () => { prepares++; }, run: (input, options) => registerNaniyori(wrapped, input, options), close: async () => {} } });
 const { store: waiting, scheduler, server } = service;
 config.origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -59,12 +60,12 @@ try {
   await page.getByRole("button", { name: "신청 취소", exact: true }).click();
   await page.locator(".badge").filter({ hasText: "신청 취소" }).waitFor();
   await schedule(); await page.locator(".badge").filter({ hasText: "실행 대기" }).waitFor();
-  const job = waiting.pending()[0]; assert.equal(job.visitDate, "2026-11-06");
+  const job = (await waiting.pending())[0]; assert.equal(job.visitDate, "2026-11-06");
   now = job.prepareAt; await scheduler.tick(); assert.equal(prepares, 1); assert.equal(submissions, 0);
   now = job.opensAt; await scheduler.tick(); assert.equal(prepares, 1); assert.equal(submissions, 0);
   now = job.runsAt;
   await scheduler.tick();
-  assert.equal(waiting.job(job.id).state, "SUCCEEDED"); assert.equal(submissions, 1);
+  assert.equal((await waiting.job(job.id)).state, "SUCCEEDED"); assert.equal(submissions, 1);
   await page.locator(".badge").filter({ hasText: "웨이팅 등록 완료" }).waitFor();
   await page.locator(".waiting-result strong").filter({ hasText: "42" }).waitFor();
   await page.reload(); await page.locator(".waiting-result strong").filter({ hasText: "42" }).waitFor();

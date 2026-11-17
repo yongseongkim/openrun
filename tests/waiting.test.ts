@@ -173,10 +173,10 @@ test("waiting-only service persists future requests across restart and executes 
     await service.stop();
     service = await startWaitingService({ config, adminToken: token, databaseFile, now: () => now, runner });
     await service.scheduler.tick();
-    assert.equal(service.store.job(saved.id).state, "SCHEDULED");
-    assert.equal(service.store.phone(saved.id), phone);
+    assert.equal((await service.store.job(saved.id)).state, "SCHEDULED");
+    assert.equal(await service.store.phone(saved.id), phone);
     now = saved.runsAt; await service.scheduler.tick();
-    assert.equal(service.store.job(saved.id).state, "SUCCEEDED"); assert.equal(runner.calls, 1);
+    assert.equal((await service.store.job(saved.id)).state, "SUCCEEDED"); assert.equal(runner.calls, 1);
   } finally { await service.stop(); await rm(directory, { recursive: true, force: true }); }
 });
 
