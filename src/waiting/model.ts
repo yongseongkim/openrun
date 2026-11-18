@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { AppError } from "../app/store.ts";
-import { NANIYORI, isClosed, slotTime, waitingCatalog, validVisitDate, WAITING_TIMING } from "./config.ts";
+import { NANIYORI, nextWaitingOpening, WAITING_TIMING } from "./config.ts";
+import type { waitingCatalog } from "./config.ts";
 import type { WaitingSlot } from "./config.ts";
 
 export type WaitingState = "SCHEDULED" | "RUNNING" | "SUBMITTING" | "SUCCEEDED" | "UNKNOWN" | "FAILED" | "EXPIRED" | "CANCELLED" | "INTERRUPTED";
@@ -56,21 +57,18 @@ export class WaitingContactCipher {
 
 export function createWaitingJob(input: Record<string, unknown>, now: number, cipher: WaitingContactCipher): PrivateWaitingJob {
   if (input.confirmed !== true) throw new AppError("WAITING_CONFIRMATION_REQUIRED");
-  if (input.restaurantId !== NANIYORI.id) throw new AppError("INVALID_WAITING_RESTAURANT");
-  const date = input.visitDate;
-  if (!validVisitDate(date)) throw new AppError("INVALID_WAITING_DATE");
-  const { bookingWindow } = waitingCatalog(now);
-  if (date < bookingWindow.minDate || date > bookingWindow.maxDate) throw new AppError("WAITING_DATE_OUT_OF_RANGE");
-  if (isClosed(date)) throw new AppError("WAITING_CLOSED_DAY");
-  if (input.slot !== "am" && input.slot !== "pm") throw new AppError("INVALID_WAITING_SLOT");
+  if (input.restaurantId !== undefined && input.restaurantId !== NANIYORI.id) throw new AppError("INVALID_WAITING_RESTAURANT");
+  const opening = nextWaitingOpening(now);
+  if (input.openingId !== opening.id) throw new AppError("WAITING_OPENING_CHANGED", 409);
+  if (!opening.canRegister) throw new AppError("WAITING_REGISTRATION_NOT_OPEN", 409);
   const partySize = Number(input.partySize);
   if (!Number.isInteger(partySize) || partySize < 1 || partySize > NANIYORI.maxPartySize) throw new AppError("INVALID_PARTY_SIZE");
   if (typeof input.phoneNumber !== "string" || !/^[0-9 -]{10,20}$/.test(input.phoneNumber)) throw new AppError("INVALID_WAITING_PHONE");
   const phone = input.phoneNumber.replace(/[ -]/g, "");
   if (!/^01[016789]\d{7,8}$/.test(phone)) throw new AppError("INVALID_WAITING_PHONE");
   if (input.notify !== undefined && typeof input.notify !== "boolean") throw new AppError("INVALID_NOTIFY");
-  const id = randomUUID(), opensAt = slotTime(date, input.slot);
-  return { id, restaurantId: NANIYORI.id, visitDate: date, slot: input.slot, partySize,
+  const id = randomUUID(), { opensAt } = opening;
+  return { id, restaurantId: NANIYORI.id, visitDate: opening.date, slot: opening.slot, partySize,
     phoneMasked: `${phone.slice(0, 3)}-****-${phone.slice(-4)}`, phoneCiphertext: cipher.encrypt(id, phone),
     opensAt, prepareAt: opensAt - WAITING_TIMING.prepareBeforeMs, runsAt: opensAt + WAITING_TIMING.startDelayMs,
     deadline: opensAt + WAITING_TIMING.receptionWindowMs, state: "SCHEDULED", notify: input.notify === true, createdAt: now, updatedAt: now };

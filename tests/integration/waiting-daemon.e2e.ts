@@ -26,7 +26,7 @@ const env = { ...process.env, OPENRUN_HOST: "127.0.0.1", OPENRUN_PORT: String(po
 const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 let child: ChildProcess | undefined;
 async function boot() {
-  child = spawn(process.execPath, [resolve(ROOT, "src/waiting/main.ts")], { cwd: ROOT, env, stdio: "ignore" });
+  child = spawn(process.execPath, ["--import", resolve(ROOT, "tests/fixtures/waiting-clock.ts"), resolve(ROOT, "src/waiting/main.ts")], { cwd: ROOT, env, stdio: "ignore" });
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     assert.equal(child.exitCode, null, "Waiting daemon exited before becoming ready");
@@ -48,14 +48,14 @@ try {
   const { stdout } = await promisify(execFile)(process.execPath, [resolve(ROOT, "src/remote/command.ts"), "console"], { cwd: ROOT, env, timeout: 10_000, encoding: "utf8" });
   const link = new URL((JSON.parse(stdout) as { url: string }).url);
   assert.equal(link.origin, publicOrigin); assert.equal(link.pathname, "/waiting");
-  const overview = await fetch(origin + "/api/app/waiting", { headers }).then(r => r.json()) as { bookingWindow: { defaultDate: string } };
+  const overview = await fetch(origin + "/api/app/waiting", { headers }).then(r => r.json()) as { nextOpening: { id: string } };
   const response = await fetch(origin + "/api/app/waiting", { method: "POST", headers, body: JSON.stringify({
-    restaurantId: "naniyori", visitDate: overview.bookingWindow.defaultDate, slot: "am", partySize: 2,
+    openingId: overview.nextOpening.id, partySize: 2,
     phoneNumber: "01000001234", confirmed: true, notify: false,
   }) });
   assert.equal(response.status, 201);
   const saved = (await response.json() as { job: { id: string; prepareAt: number } }).job;
-  assert.ok(saved.prepareAt > Date.now()); // This test can never warm or submit a live request.
+  assert.ok(saved.prepareAt > Date.parse("2026-11-03T21:00:00+09:00")); // Child time remains frozen before preparation.
   await stop(); await boot();
   const after = await fetch(origin + "/api/app/waiting", { headers }).then(r => r.text());
   const jobs = (JSON.parse(after) as { jobs: { id: string; state: string }[] }).jobs;

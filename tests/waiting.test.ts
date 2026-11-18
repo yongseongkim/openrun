@@ -9,7 +9,7 @@ import { WaitingStore } from "../src/waiting/store.ts";
 import type { WaitingResult } from "../src/waiting/store.ts";
 import { WaitingScheduler } from "../src/waiting/scheduler.ts";
 import type { SyrupRunner } from "../src/waiting/syrup.ts";
-import { kstDate, tomorrowDate, slotTime } from "../src/waiting/config.ts";
+import { kstDate, tomorrowDate, slotTime, nextWaitingOpening } from "../src/waiting/config.ts";
 import { AppStore } from "../src/app/store.ts";
 import { AuthCoordinator } from "../src/remote/coordinator.ts";
 import { remoteConfig } from "../src/remote/config.ts";
@@ -21,7 +21,7 @@ import { startWaitingService } from "../src/waiting/service.ts";
 const token = "test-owner-key-of-at-least-thirty-two-characters";
 const phone = "01000001234";
 const base = Date.parse("2026-11-03T21:00:00+09:00"); // Tomorrow is Wednesday.
-const request = (patch: Record<string, unknown> = {}) => ({ restaurantId: "naniyori", visitDate: "2026-11-04", slot: "am", partySize: 2, phoneNumber: phone, confirmed: true, notify: false, ...patch });
+const request = (patch: Record<string, unknown> = {}) => ({ openingId: "2026-11-04:am:10:00", partySize: 2, phoneNumber: phone, confirmed: true, notify: false, ...patch });
 const result: WaitingResult = { waitNumber: "42", teamsAhead: "3", registrationTime: "10:00:03" };
 class Runner implements SyrupRunner {
   calls = 0; prepares = 0; closes = 0; mode: "ok" | "lost" | "before" = "ok";
@@ -43,7 +43,7 @@ test("tomorrow and opening times use KST across the UTC date boundary", () => {
   assert.equal(new Date(slotTime("2026-11-04", "pm")).toISOString(), "2026-11-04T07:00:00.000Z");
 });
 
-test("waiting requests encrypt contacts, survive reopening, and deduplicate by date/slot", async () => {
+test("roster contacts are encrypted, survive reopening, and deduplicate by phone and opening", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openrun-waiting-")), file = join(directory, "state.sqlite");
   let store = new WaitingStore(file, token, () => base);
   try {
@@ -52,7 +52,8 @@ test("waiting requests encrypt contacts, survive reopening, and deduplicate by d
     assert.equal(JSON.stringify(job).includes(phone), false);
     assert.equal(JSON.stringify(store.jobs()).includes("phoneCiphertext"), false);
     assert.equal(store.phone(job.id), phone);
-    assert.throws(() => store.schedule(request({ phoneNumber: "01000005678" })), /WAITING_ALREADY_EXISTS/);
+    assert.throws(() => store.schedule(request({ phoneNumber: "010-0000-1234" })), /WAITING_ALREADY_EXISTS/);
+    assert.equal(store.schedule(request({ phoneNumber: "01099991234" })).phoneMasked, job.phoneMasked);
     store.close();
     assert.equal((await readFile(file)).includes(Buffer.from(phone)), false);
     // Simulate a DB written before preparation/attempt timestamps were added.
@@ -72,19 +73,23 @@ test("waiting requests encrypt contacts, survive reopening, and deduplicate by d
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("only confirmed dates in the next thirty days on configured operating days are accepted", () => {
+test("only the displayed next opening can be registered, starting the day before", () => {
   let now = base; const store = new WaitingStore(":memory:", token, () => now);
   try {
     assert.throws(() => store.schedule(request({ confirmed: false })), /WAITING_CONFIRMATION_REQUIRED/);
-    assert.throws(() => store.schedule(request({ visitDate: "2026-11-03" })), /WAITING_DATE_OUT_OF_RANGE/);
-    assert.equal(store.schedule(request({ visitDate: "2026-11-28" })).visitDate, "2026-11-28");
-    assert.throws(() => store.schedule(request({ visitDate: "2026-12-04" })), /WAITING_DATE_OUT_OF_RANGE/);
-    for (const visitDate of ["2026-11-31", "2026-02-29", "2026-11-4", null]) assert.throws(() => store.schedule(request({ visitDate })), /INVALID_WAITING_DATE/);
-    assert.throws(() => store.schedule(request({ slot: "night" })), /INVALID_WAITING_SLOT/);
+    for (const openingId of ["2026-11-03:am", "2026-11-28:am", "2026-11-04:pm:16:00", "2026-11-31:am", null]) assert.throws(() => store.schedule(request({ openingId })), /WAITING_OPENING_CHANGED/);
     assert.throws(() => store.schedule(request({ partySize: 0 })), /INVALID_PARTY_SIZE/);
     assert.throws(() => store.schedule(request({ phoneNumber: "not a phone" })), /INVALID_WAITING_PHONE/);
-    now = Date.parse("2026-11-04T21:00:00+09:00");
-    assert.throws(() => store.schedule(request({ visitDate: "2026-11-05" })), /WAITING_CLOSED_DAY/);
+    now = Date.parse("2026-11-04T09:00:00+09:00");
+    assert.equal(store.schedule(request()).visitDate, "2026-11-04");
+    now = Date.parse("2026-11-04T10:00:00+09:00");
+    assert.throws(() => store.schedule(request()), /WAITING_OPENING_CHANGED/);
+    assert.equal(store.schedule(request({ openingId: "2026-11-04:pm:16:00" })).slot, "pm");
+    now = Date.parse("2026-11-04T16:00:00+09:00");
+    assert.equal(nextWaitingOpening(now).id, "2026-11-06:am:10:00");
+    assert.throws(() => store.schedule(request({ openingId: "2026-11-06:am:10:00" })), /WAITING_REGISTRATION_NOT_OPEN/);
+    now = Date.parse("2026-11-05T00:00:00+09:00");
+    assert.equal(store.schedule(request({ openingId: "2026-11-06:am:10:00" })).visitDate, "2026-11-06");
   } finally { store.close(); }
 });
 
@@ -118,7 +123,7 @@ test("submission ambiguity and restarts cannot silently retry a waiting registra
     await scheduler.tick(); store.recover(); assert.equal(runner.calls, 1);
     now = base;
     assert.throws(() => store.schedule(request()), /WAITING_ALREADY_EXISTS/);
-    const second = store.schedule(request({ slot: "pm" }));
+    const second = store.schedule(request({ phoneNumber: "01000005678" }));
     store.transition(second.id, ["SCHEDULED"], "RUNNING"); store.transition(second.id, ["RUNNING"], "SUBMITTING");
     store.recover(); assert.equal(store.job(second.id).state, "UNKNOWN");
   } finally { await scheduler.close(); store.close(); }
@@ -130,8 +135,9 @@ test("cancelled and expired requests never open the provider; missed deadlines d
   try {
     const cancelled = store.schedule(request()); store.cancel(cancelled.id);
     now = cancelled.opensAt; await scheduler.tick(); assert.equal(runner.calls, 0);
-    now = base; const morning = store.schedule(request()), afternoon = store.schedule(request({ slot: "pm" }));
+    now = base; const morning = store.schedule(request());
     now = morning.deadline + 1; await scheduler.tick(); assert.equal(store.job(morning.id).state, "EXPIRED");
+    const afternoon = store.schedule(request({ openingId: "2026-11-04:pm:16:00" }));
     now = afternoon.runsAt; await scheduler.tick(); assert.equal(store.job(afternoon.id).state, "SUCCEEDED");
     assert.equal(runner.calls, 1);
   } finally { await scheduler.close(); store.close(); }
@@ -141,9 +147,11 @@ test("cancelling a warmed job releases the browser and later dates still run", a
   let now = base; const store = new WaitingStore(":memory:", token, () => now), runner = new Runner();
   const scheduler = new WaitingScheduler(store, runner, { now: () => now });
   try {
-    const first = store.schedule(request()), later = store.schedule(request({ visitDate: "2026-11-06" }));
+    const first = store.schedule(request());
     now = first.prepareAt; await scheduler.tick(); assert.equal(runner.prepares, 1);
     store.cancel(first.id); await scheduler.tick(); assert.equal(runner.closes, 1); assert.equal(runner.calls, 0);
+    now = Date.parse("2026-11-05T21:00:00+09:00");
+    const later = store.schedule(request({ openingId: "2026-11-06:am:10:00" }));
     now = later.prepareAt; await scheduler.tick(); assert.equal(runner.prepares, 2);
     now = later.runsAt; await scheduler.tick();
     assert.equal(store.job(later.id).state, "SUCCEEDED"); assert.equal(runner.calls, 1); assert.equal(runner.closes, 2);
@@ -166,7 +174,7 @@ test("waiting-only service persists future requests across restart and executes 
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
     const link = await fetch(origin + "/api/console/link", { method: "POST", headers }).then(r => r.json()) as { url: string };
     assert.equal(new URL(link.url).pathname, "/waiting");
-    const response = await fetch(origin + "/api/app/waiting", { method: "POST", headers, body: JSON.stringify(request({ visitDate: "2026-11-06" })) });
+    const response = await fetch(origin + "/api/app/waiting", { method: "POST", headers, body: JSON.stringify(request()) });
     assert.equal(response.status, 201);
     const saved = (await response.json() as { job: { id: string; runsAt: number } }).job;
     assert.equal(runner.prepares, 0);
@@ -208,8 +216,8 @@ test("waiting API shares owner authentication, rejects CSRF, and exposes no cont
     const exchanged = await post("/api/console/exchange", { token: secret }, { origin: config.origin });
     const cookie = exchanged.headers.get("set-cookie")!.split(";")[0], headers = { cookie, origin: config.origin };
     assert.equal((await post("/api/app/waiting", request(), { cookie })).status, 403);
-    const overview = await fetch(config.origin + "/api/app/waiting", { headers }).then(r => r.json()) as { tomorrow: { date: string } };
-    assert.equal(overview.tomorrow.date, "2026-11-04");
+    const overview = await fetch(config.origin + "/api/app/waiting", { headers }).then(r => r.json()) as { nextOpening: { id: string } };
+    assert.equal(overview.nextOpening.id, "2026-11-04:am:10:00");
     const created = await post("/api/app/waiting", request(), headers); assert.equal(created.status, 201);
     const text = await created.text(); assert.equal(text.includes(phone), false); assert.equal(text.includes("phoneCiphertext"), false);
     const id = (JSON.parse(text) as { job: { id: string } }).job.id;

@@ -13,7 +13,7 @@ if (!connection || !new URL(connection).pathname.startsWith("/openrun_test")) th
 const root = new Pool({ connectionString: connection }); after(async () => { await root.end(); });
 const key = "postgres-fixture-owner-key-of-at-least-thirty-two-characters";
 const phone = "01000001234", base = Date.parse("2026-11-03T21:00:00+09:00");
-const input = (patch: Record<string, unknown> = {}) => ({ restaurantId: "naniyori", visitDate: "2026-11-04", slot: "am", partySize: 2, phoneNumber: phone, confirmed: true, notify: false, ...patch });
+const input = (patch: Record<string, unknown> = {}) => ({ openingId: "2026-11-04:am:10:00", partySize: 2, phoneNumber: phone, confirmed: true, notify: false, ...patch });
 const result = { waitNumber: "42", teamsAhead: "3", registrationTime: "10:00:03" };
 type Fixture = { pool: Pool; clock: { now: number }; store: PostgresWaitingStore; make: (token?: string) => PostgresWaitingStore };
 async function fixture(action: (value: Fixture) => Promise<void>) {
@@ -40,24 +40,27 @@ test("PostgreSQL persists encrypted requests and exact KST times across connecti
   assert.equal(JSON.stringify(persisted).includes(phone), false);
   assert.equal(JSON.stringify(await reopened.jobs()).includes("phoneCiphertext"), false);
   await assert.rejects(make("different-key-of-at-least-thirty-two-characters").phone(job.id), /WAITING_CONTACT_UNAVAILABLE/);
-  await assert.rejects(store.schedule(input({ visitDate: "2026-11-31" })), /INVALID_WAITING_DATE/);
+  await assert.rejects(store.schedule(input({ openingId: "2026-11-31:am" })), /WAITING_OPENING_CHANGED/);
 }));
 
-test("concurrent PostgreSQL registrations have one winner and cancelled slots can be replaced", () => fixture(async ({ store, make }) => {
+test("a roster accepts different phones but concurrent duplicate phones have one winner", () => fixture(async ({ store, make }) => {
   const other = make();
   const attempts = await Promise.allSettled([store.schedule(input()), other.schedule(input())]);
   assert.equal(attempts.filter(item => item.status === "fulfilled").length, 1);
   const rejected = attempts.find(item => item.status === "rejected") as PromiseRejectedResult;
   assert.match(rejected.reason.message, /WAITING_ALREADY_EXISTS/);
   const [original] = await store.jobs();
+  // Identical masks still belong to different full phone numbers.
+  const another = await other.schedule(input({ phoneNumber: "01099991234" }));
+  assert.equal(another.phoneMasked, original.phoneMasked);
   await other.cancel(original.id);
   const next = await store.schedule(input()); assert.notEqual(next.id, original.id);
-  assert.equal((await store.jobs()).length, 2);
+  assert.equal((await store.jobs()).length, 3);
 }));
 
 test("schema migrations serialize, are repeatable, and reject checksum changes", () => fixture(async ({ pool }) => {
   await Promise.all([migrateWaitingDatabase(pool), migrateWaitingDatabase(pool)]);
-  assert.equal((await pool.query("SELECT * FROM waiting_schema_migrations")).rowCount, 1);
+  assert.equal((await pool.query("SELECT * FROM waiting_schema_migrations")).rowCount, 2);
   await pool.query("UPDATE waiting_schema_migrations SET checksum='changed'");
   await assert.rejects(migrateWaitingDatabase(pool), /WAITING_MIGRATION_CHANGED/);
   assert.equal((await pool.query("SELECT count(*) FROM waiting_requests")).rows[0].count, "0");
@@ -66,7 +69,7 @@ test("schema migrations serialize, are repeatable, and reject checksum changes",
 test("one scheduler owns recovery; restart preserves uncertain submissions and their history", () => fixture(async ({ store, make }) => {
   await store.acquireScheduler();
   const other = make(); await assert.rejects(other.acquireScheduler(), /WAITING_SCHEDULER_BUSY/);
-  const first = await store.schedule(input()), second = await store.schedule(input({ slot: "pm" }));
+  const first = await store.schedule(input()), second = await store.schedule(input({ phoneNumber: "01000005678" }));
   await store.transition(first.id, ["SCHEDULED"], "RUNNING");
   await store.transition(second.id, ["SCHEDULED"], "RUNNING");
   await store.transition(second.id, ["RUNNING"], "SUBMITTING");
@@ -76,7 +79,7 @@ test("one scheduler owns recovery; restart preserves uncertain submissions and t
   assert.equal((await other.job(first.id)).state, "INTERRUPTED");
   assert.equal((await other.job(second.id)).state, "UNKNOWN");
   assert.equal((await other.attempts(second.id))[0].state, "UNKNOWN");
-  await assert.rejects(other.schedule(input({ slot: "pm" })), /WAITING_ALREADY_EXISTS/);
+  await assert.rejects(other.schedule(input({ phoneNumber: "01000005678" })), /WAITING_ALREADY_EXISTS/);
 }));
 
 test("competing claims create one attempt; request and attempt changes commit together", () => fixture(async ({ pool, store }) => {

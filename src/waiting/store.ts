@@ -20,7 +20,8 @@ export class WaitingStore implements WaitingRepository {
     this.#db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS waiting_jobs (id TEXT PRIMARY KEY, restaurant_id TEXT NOT NULL, visit_date TEXT NOT NULL, slot TEXT NOT NULL, state TEXT NOT NULL, opens_at INTEGER NOT NULL, body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS waiting_due ON waiting_jobs(state, opens_at);
-      CREATE UNIQUE INDEX IF NOT EXISTS waiting_unique_active ON waiting_jobs(restaurant_id, visit_date, slot) WHERE state NOT IN ('CANCELLED', 'FAILED', 'EXPIRED');`);
+      DROP INDEX IF EXISTS waiting_unique_active;
+      CREATE INDEX IF NOT EXISTS waiting_roster ON waiting_jobs(restaurant_id, visit_date, slot) WHERE state NOT IN ('CANCELLED', 'FAILED', 'EXPIRED');`);
   }
   #private(id: string): PrivateWaitingJob {
     const row = this.#db.prepare("SELECT body FROM waiting_jobs WHERE id=?").get(id);
@@ -33,12 +34,14 @@ export class WaitingStore implements WaitingRepository {
   pending(): WaitingJob[] { return this.#db.prepare("SELECT body FROM waiting_jobs WHERE state='SCHEDULED' ORDER BY opens_at, rowid").all().map(row => publicWaitingJob(JSON.parse(row.body as string))); }
   schedule(input: Record<string, unknown>): WaitingJob {
     const item = createWaitingJob(input, this.#now(), this.#cipher);
-    try { this.#db.prepare("INSERT INTO waiting_jobs VALUES (?, ?, ?, ?, ?, ?, ?)").run(item.id, item.restaurantId, item.visitDate, item.slot, item.state, item.opensAt, JSON.stringify(item)); }
-    catch (error) {
-      if ((error as { errcode?: number }).errcode === 2067 || String((error as Error).message).includes("UNIQUE constraint")) throw new AppError("WAITING_ALREADY_EXISTS", 409);
-      throw error;
-    }
-    return publicWaitingJob(item);
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const phone = this.#cipher.decrypt(item);
+      const entries = this.#db.prepare("SELECT body FROM waiting_jobs WHERE restaurant_id=? AND visit_date=? AND slot=? AND state NOT IN ('CANCELLED','FAILED','EXPIRED')").all(item.restaurantId, item.visitDate, item.slot);
+      if (entries.some(row => this.#cipher.decrypt(JSON.parse(row.body as string)) === phone)) throw new AppError("WAITING_ALREADY_EXISTS", 409);
+      this.#db.prepare("INSERT INTO waiting_jobs VALUES (?, ?, ?, ?, ?, ?, ?)").run(item.id, item.restaurantId, item.visitDate, item.slot, item.state, item.opensAt, JSON.stringify(item));
+      this.#db.exec("COMMIT"); return publicWaitingJob(item);
+    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
   }
   phone(id: string): string { return this.#cipher.decrypt(this.#private(id)); }
   transition(id: string, from: WaitingState[], state: WaitingState, patch: WaitingPatch = {}): WaitingJob {

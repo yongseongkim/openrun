@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { AppError } from "../app/store.ts";
-import { waitingCatalog } from "./config.ts";
+import { waitingCatalog, nextWaitingOpening } from "./config.ts";
 import { waitingPool, waitingMigrations, databaseFailure } from "./database.ts";
 import { WaitingContactCipher, createWaitingJob, publicWaitingJob } from "./model.ts";
 import type { WaitingJob, WaitingState, PrivateWaitingJob, WaitingPatch, WaitingAttempt, WaitingRepository } from "./model.ts";
@@ -109,17 +109,20 @@ export class PostgresWaitingStore implements WaitingRepository {
   }
   async schedule(input: Record<string, unknown>): Promise<WaitingJob> {
     const job = createWaitingJob(input, this.#now(), this.#cipher);
-    try {
-      await this.#pool.query(`INSERT INTO waiting_requests
+    return this.#transaction(async client => {
+      // Serialize this opening's roster so the same phone cannot be added twice.
+      await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2))", [0x524f5354, `${job.restaurantId}:${job.visitDate}:${job.slot}`]);
+      if (nextWaitingOpening(this.#now()).id !== input.openingId) throw new AppError("WAITING_OPENING_CHANGED", 409);
+      const entries = await client.query<Row>(`${SELECT} WHERE restaurant_id=$1 AND visit_date=$2 AND slot=$3 AND state NOT IN ('CANCELLED','FAILED','EXPIRED')`, [job.restaurantId, job.visitDate, job.slot]);
+      const phone = this.#cipher.decrypt(job);
+      if (entries.rows.some(row => this.#cipher.decrypt(item(row)) === phone)) throw new AppError("WAITING_ALREADY_EXISTS", 409);
+      await client.query(`INSERT INTO waiting_requests
         (id,restaurant_id,visit_date,slot,party_size,phone_ciphertext,phone_masked,opens_at,prepare_at,runs_at,deadline_at,state,notify,created_at,updated_at)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`,
       [job.id, job.restaurantId, job.visitDate, job.slot, job.partySize, job.phoneCiphertext, job.phoneMasked,
         new Date(job.opensAt), new Date(job.prepareAt), new Date(job.runsAt), new Date(job.deadline), job.state, job.notify, new Date(job.createdAt)]);
       return publicWaitingJob(job);
-    } catch (error) {
-      if ((error as { code?: string }).code === "23505") throw new AppError("WAITING_ALREADY_EXISTS", 409);
-      throw databaseFailure(error);
-    }
+    });
   }
   async phone(id: string): Promise<string> { return this.#cipher.decrypt(await this.#read(id)); }
   async #change(client: PoolClient, id: string, from: WaitingState[], state: WaitingState, patch: WaitingPatch): Promise<WaitingJob> {

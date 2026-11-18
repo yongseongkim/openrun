@@ -10,7 +10,7 @@
 | `waiting_attempts` | 요청별 실행 시작·제출·종료 시각, 상태, 결과와 안전한 메시지 |
 | `waiting_schema_migrations` | 적용한 SQL 파일명·SHA-256 checksum·적용 시각 |
 
-방문일은 `date`, 실제 실행 시각은 `timestamptz`입니다. API는 기존처럼 epoch 밀리초와 KST 방문일 문자열을 사용합니다. 활성 신청에 `(restaurant_id, visit_date, slot)` 부분 unique index를 적용합니다. 취소·제출 전 실패·만료된 신청만 같은 슬롯에 새로 신청할 수 있고, `UNKNOWN`/`INTERRUPTED`는 사람이 확인하기 전 중복 신청을 차단합니다.
+방문일은 `date`, 실제 실행 시각은 `timestamptz`입니다. 화면은 매장 설정의 다음 접수 명부만 보여주고 인원수·전화번호를 받습니다. 날짜와 시간대는 서버에서 정합니다. `002_roster.sql`은 회차당 한 건 제한을 없애 여러 전화번호를 허용합니다. 같은 회차의 명부 추가는 transaction advisory lock으로 직렬화하고, 활성 연락처를 메모리에서 복호화해 동일 전화번호의 중복을 막습니다. 번호 일부가 같아도 서로 다른 전화번호는 등록할 수 있습니다. 취소·제출 전 실패·만료는 다시 신청할 수 있고, `UNKNOWN`/`INTERRUPTED`는 내역 확인 전 같은 번호의 중복 신청을 차단합니다.
 
 연락처는 기존 AES-GCM 형식을 그대로 사용합니다. 원문은 DB에 저장하지 않으며 요청 ID를 authenticated data로 사용합니다. `OPENRUN_ADMIN_TOKEN`에서 암호화 키를 파생하므로 DB 이전·백업 복원 시 같은 관리 키를 보존해야 합니다. API에는 마스킹 번호만 반환하고 접속 URL·SQL/드라이버 오류·연락처는 로그에 출력하지 않습니다.
 
