@@ -44,16 +44,17 @@ async function stop() {
 }
 try {
   await boot();
-  assert.equal((await fetch(origin + "/", { redirect: "manual" })).headers.get("location"), "/waiting");
+  assert.equal((await fetch(origin + "/")).status, 200);
+  assert.equal((await fetch(origin + "/waiting", {redirect:"manual"})).headers.get("location"), "/");
   const { stdout } = await promisify(execFile)(process.execPath, [resolve(ROOT, "src/remote/command.ts"), "console"], { cwd: ROOT, env, timeout: 10_000, encoding: "utf8" });
   const link = new URL((JSON.parse(stdout) as { url: string }).url);
-  assert.equal(link.origin, publicOrigin); assert.equal(link.pathname, "/waiting");
+  assert.equal(link.origin, publicOrigin); assert.equal(link.pathname, "/");
   const overview = await fetch(origin + "/api/app/waiting", { headers }).then(r => r.json()) as { nextOpening: { id: string } };
   const response = await fetch(origin + "/api/app/waiting", { method: "POST", headers, body: JSON.stringify({
     openingId: overview.nextOpening.id, partySize: 2,
     phoneNumber: "01000001234", confirmed: true, notify: false,
   }) });
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 200);
   const saved = (await response.json() as { job: { id: string; prepareAt: number } }).job;
   assert.ok(saved.prepareAt > Date.parse("2026-11-03T21:00:00+09:00")); // Child time remains frozen before preparation.
   await stop(); await boot();

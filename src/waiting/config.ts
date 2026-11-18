@@ -21,19 +21,10 @@ export function slotTime(date: string, slot: WaitingSlot): number {
   if (!entry) throw new AppError("INVALID_WAITING_SLOT");
   return Date.parse(`${date}T${entry.time}:00+09:00`);
 }
-export function nextWaitingOpening(now = Date.now()) {
-  for (let days = 0; days < 8; days++) {
-    const date = kstDate(now + days * 86400000);
-    if (isClosed(date)) continue;
-    for (const slot of NANIYORI.slots) {
-      const opensAt = slotTime(date, slot.id);
-      if (opensAt <= now) continue;
-      const registrationOpensAt = Date.parse(`${date}T00:00:00+09:00`) - 86400000;
-      return { id: `${date}:${slot.id}:${slot.time}`, date, slot: slot.id, opensAt, registrationOpensAt, canRegister: now >= registrationOpensAt };
-    }
-  }
-  throw new AppError("WAITING_SCHEDULE_UNAVAILABLE", 503);
+export function tomorrowWaitingOpening(now = Date.now()) {
+  const date = tomorrowDate(now), slot = NANIYORI.slots[0], closed = isClosed(date);
+  return { id: `${date}:${slot.id}:${slot.time}`, date, slot: slot.id, opensAt: slotTime(date, slot.id), closed, canRegister: !closed };
 }
 export function waitingCatalog(now = Date.now()) {
-  return { restaurant: NANIYORI, nextOpening: nextWaitingOpening(now) };
+  return { restaurant: NANIYORI, nextOpening: tomorrowWaitingOpening(now) };
 }

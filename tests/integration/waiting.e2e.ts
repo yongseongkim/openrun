@@ -20,7 +20,7 @@ const wrapped = { newContext: async (options: BrowserContextOptions) => {
     if (new URL(route.request().url()).pathname === "/fixture-submit") {
       submissions++;
       assert.equal((await waiting.jobs()).some(job => job.state === "SUBMITTING"), true);
-      assert.deepEqual(route.request().postDataJSON(), { partySize: 2, phoneNumber: "01000001234" });
+      assert.deepEqual(route.request().postDataJSON(), { partySize: 4, phoneNumber: "01000001234" });
       await route.fulfill({ json: { ok: true } }); return;
     }
     await route.fulfill({ contentType: "text/html; charset=utf-8", body: `<button class="button-updown">-</button><span id="count">1</span><button id="plus" class="button-updown">+</button><input id="test_input"><div class="info-group-step3" hidden>확인</div><button class="button-next">다음</button><script>
@@ -40,24 +40,34 @@ try {
   const page = await client.newPage({ viewport: { width: 1280, height: 1000 } });
   await page.goto(config.origin + "/waiting"); await page.locator("#gate").waitFor();
   const owner = await fetch(config.origin + "/api/console/link", { method: "POST", headers: { authorization: `Bearer ${token}` } }).then(r => r.json()) as { url: string };
-  assert.equal(new URL(owner.url).pathname, "/waiting");
-  await page.goto(owner.url); await page.getByRole("button", { name: "나의 웨이팅 열기", exact: true }).click();
-  await page.getByRole("heading", { name: "다음 나니요리 웨이팅", exact: true }).waitFor();
-  assert.equal(await page.locator("#catchtable-nav").isVisible(), false);
+  assert.equal(new URL(owner.url).pathname, "/");
+  await page.goto(owner.url); await page.getByRole("button", { name: "OpenRun 열기", exact: true }).click();
+  await page.getByRole("heading", { name: "함께 갈 식탁", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/");
+  assert.equal(await page.getByRole("tab", { name: "나니요리", exact: true }).getAttribute("aria-selected"), "true");
+  assert.equal(await page.getByRole("tab").count(), 1);
   const form = page.locator("#waiting-form"), rows = page.locator(".roster-entry");
   assert.equal(await form.locator("input").count(), 2);
   assert.equal(await form.locator("select, input[type=date], input[type=checkbox]").count(), 0);
   assert.match(await page.locator("#next-run").innerText(), /11월 4일/);
-  async function schedule(phoneNumber = "010-0000-1234") {
-    await form.locator('[name="partySize"]').fill("2");
+  async function schedule(phoneNumber = "010-0000-1234", partySize = "2") {
+    await form.locator('[name="partySize"]').fill(partySize);
     await form.locator('[name="phoneNumber"]').fill(phoneNumber);
-    await form.getByRole("button", { name: "다음 접수에 신청", exact: true }).click();
+    await form.getByRole("button", { name: "신청 · 수정", exact: true }).click();
   }
   await schedule(); await rows.first().waitFor();
   assert.equal(await form.locator('[name="phoneNumber"]').inputValue(), "");
   assert.equal((await page.locator("#waiting-jobs").innerText()).includes("01000001234"), false);
-  await schedule(); await form.locator(".form-error").filter({ hasText: "이미 명부에 있는" }).waitFor();
+  const originalId=(await waiting.pending())[0].id;
+  await schedule("010-0000-1234", "3");
+  await rows.first().getByText("3명", {exact:true}).waitFor();
   assert.equal(await rows.count(), 1);
+  assert.equal((await waiting.pending())[0].id, originalId);
+  await rows.first().getByRole("button", {name:"인원 수정",exact:true}).click();
+  await rows.first().getByRole("spinbutton", {name:"수정할 인원수"}).fill("4");
+  await rows.first().getByRole("button", {name:"저장",exact:true}).click();
+  await rows.first().getByText("4명", {exact:true}).waitFor();
+  assert.equal((await waiting.job(originalId)).partySize, 4);
   await schedule("010-0000-5678"); await rows.nth(1).waitFor();
   assert.equal(await page.locator("#roster-count").innerText(), "2건");
   const artifacts = process.env.OPENRUN_TEST_ARTIFACT_DIR ?? resolve(directory, "artifacts"); await mkdir(artifacts, { recursive: true });
@@ -65,34 +75,33 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: resolve(artifacts, "waiting-mobile.png"), fullPage: true });
-  await rows.nth(1).locator("button").click();
+  await rows.filter({hasText:"010-****-5678"}).getByRole("button", {name:"삭제",exact:true}).click();
   await page.waitForFunction(() => document.querySelectorAll(".roster-entry").length === 1);
-  await rows.first().locator("button").click(); await page.locator(".empty").waitFor();
-  await schedule(); await rows.first().waitFor();
+  // A page left open across KST midnight cannot submit to a different day's roster.
+  await form.locator('[name="phoneNumber"]').fill("010-0000-9999");
+  now = Date.parse("2026-11-04T00:00:00+09:00");
+  await form.getByRole("button", {name:"신청 · 수정",exact:true}).click();
+  await form.locator(".form-error").filter({hasText:"명부의 날짜가 바뀌었습니다"}).waitFor();
+  assert.equal((await waiting.pending()).length, 1);
+  await page.waitForFunction(() => document.querySelector<HTMLFieldSetElement>("#waiting-fields")?.disabled === true);
+  assert.match(await page.locator("#next-run").innerText(), /11월 5일/);
   const job = (await waiting.pending())[0]; assert.equal(job.visitDate, "2026-11-04");
   now = job.prepareAt; await scheduler.tick(); assert.equal(prepares, 1); assert.equal(submissions, 0);
   now = job.opensAt; await scheduler.tick(); assert.equal(prepares, 1); assert.equal(submissions, 0);
   now = job.runsAt; await scheduler.tick();
   assert.equal((await waiting.job(job.id)).state, "SUCCEEDED"); assert.equal(submissions, 1);
   assert.equal((await waiting.job(job.id)).result?.waitNumber, "42");
-  await page.reload(); await page.getByRole("heading", { name: "다음 나니요리 웨이팅", exact: true }).waitFor();
-  await page.locator(".empty").waitFor();
-  assert.match(await page.locator("#next-run").innerText(), /오후 4:00/);
-  // A form opened for the afternoon cannot silently enroll in Friday's roster.
-  await form.locator('[name="phoneNumber"]').fill("010-0000-1234");
-  now = Date.parse("2026-11-04T16:00:00+09:00");
-  await form.getByRole("button", { name: "다음 접수에 신청", exact: true }).click();
-  await form.locator(".form-error").filter({ hasText: "접수 시간이 바뀌었습니다" }).waitFor();
-  assert.equal((await waiting.pending()).length, 0);
-  await page.waitForFunction(() => document.querySelector<HTMLFieldSetElement>("#waiting-fields")?.disabled === true);
-  assert.match(await page.locator("#next-run").innerText(), /11월 6일/);
+  await page.reload(); await page.getByRole("heading", {name:"함께 갈 식탁",exact:true}).waitFor();
+  await page.locator("#waiting-jobs .empty").waitFor();
+  assert.match(await page.locator("#next-run").innerText(), /11월 5일/);
+  assert.equal(await form.getByRole("button", {name:"신청 · 수정",exact:true}).isDisabled(), true);
   now = Date.parse("2026-11-05T00:00:00+09:00"); await page.reload();
-  await page.getByRole("heading", { name: "다음 나니요리 웨이팅", exact: true }).waitFor();
-  assert.equal(await form.getByRole("button", { name: "다음 접수에 신청", exact: true }).isDisabled(), false);
+  await page.getByRole("heading", {name:"함께 갈 식탁",exact:true}).waitFor();
+  assert.equal(await form.getByRole("button", {name:"신청 · 수정",exact:true}).isDisabled(), false);
   await schedule(); await rows.first().waitFor();
   assert.equal((await waiting.pending())[0].visitDate, "2026-11-06");
   assert.equal(submissions, 1);
-  console.log(JSON.stringify({ status: "WAITING_E2E_PASSED", waitingOnly: true, twoFieldRoster: true, multiplePhones: true, duplicatePhoneRejected: true, nextOpeningKst: true, warmUpBeforeOpening: true, attemptOneSecondAfterOpening: true, encryptedContact: true, deleteBeforeRun: true, providerSubmissions: 1, mobileLayout: true, closedDay: true, staleOpeningRejected: true, registrationFromPreviousDay: true, liveRegistrations: 0 }));
+  console.log(JSON.stringify({ status: "WAITING_E2E_PASSED", waitingOnly: true, twoFieldRoster: true, multiplePhones: true, samePhoneUpdatesParty: true, inlinePartyEdit: true, tomorrowMorningKst: true, warmUpBeforeOpening: true, attemptOneSecondAfterOpening: true, encryptedContact: true, deleteBeforeRun: true, providerSubmissions: 1, mobileLayout: true, closedDay: true, staleOpeningRejected: true, singlePageTabs: true, liveRegistrations: 0 }));
 } finally {
   await client.close(); await service.stop(); await automation.close();
   await rm(directory, { recursive: true, force: true });

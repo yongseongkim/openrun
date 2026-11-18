@@ -9,7 +9,7 @@ import { WaitingStore } from "../src/waiting/store.ts";
 import type { WaitingResult } from "../src/waiting/store.ts";
 import { WaitingScheduler } from "../src/waiting/scheduler.ts";
 import type { SyrupRunner } from "../src/waiting/syrup.ts";
-import { kstDate, tomorrowDate, slotTime, nextWaitingOpening } from "../src/waiting/config.ts";
+import { kstDate, tomorrowDate, slotTime, tomorrowWaitingOpening } from "../src/waiting/config.ts";
 import { AppStore } from "../src/app/store.ts";
 import { AuthCoordinator } from "../src/remote/coordinator.ts";
 import { remoteConfig } from "../src/remote/config.ts";
@@ -43,7 +43,7 @@ test("tomorrow and opening times use KST across the UTC date boundary", () => {
   assert.equal(new Date(slotTime("2026-11-04", "pm")).toISOString(), "2026-11-04T07:00:00.000Z");
 });
 
-test("roster contacts are encrypted, survive reopening, and deduplicate by phone and opening", async () => {
+test("roster contacts are encrypted, survive reopening, and update the same phone in place", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openrun-waiting-")), file = join(directory, "state.sqlite");
   let store = new WaitingStore(file, token, () => base);
   try {
@@ -52,7 +52,8 @@ test("roster contacts are encrypted, survive reopening, and deduplicate by phone
     assert.equal(JSON.stringify(job).includes(phone), false);
     assert.equal(JSON.stringify(store.jobs()).includes("phoneCiphertext"), false);
     assert.equal(store.phone(job.id), phone);
-    assert.throws(() => store.schedule(request({ phoneNumber: "010-0000-1234" })), /WAITING_ALREADY_EXISTS/);
+    assert.equal(store.schedule(request({ phoneNumber: "010-0000-1234", partySize: 4 })).id, job.id);
+    assert.equal(store.job(job.id).partySize, 4);
     assert.equal(store.schedule(request({ phoneNumber: "01099991234" })).phoneMasked, job.phoneMasked);
     store.close();
     assert.equal((await readFile(file)).includes(Buffer.from(phone)), false);
@@ -73,23 +74,24 @@ test("roster contacts are encrypted, survive reopening, and deduplicate by phone
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("only the displayed next opening can be registered, starting the day before", () => {
+test("the roster always targets tomorrow morning in KST and never skips closed days", () => {
   let now = base; const store = new WaitingStore(":memory:", token, () => now);
   try {
     assert.throws(() => store.schedule(request({ confirmed: false })), /WAITING_CONFIRMATION_REQUIRED/);
     for (const openingId of ["2026-11-03:am", "2026-11-28:am", "2026-11-04:pm:16:00", "2026-11-31:am", null]) assert.throws(() => store.schedule(request({ openingId })), /WAITING_OPENING_CHANGED/);
     assert.throws(() => store.schedule(request({ partySize: 0 })), /INVALID_PARTY_SIZE/);
     assert.throws(() => store.schedule(request({ phoneNumber: "not a phone" })), /INVALID_WAITING_PHONE/);
-    now = Date.parse("2026-11-04T09:00:00+09:00");
     assert.equal(store.schedule(request()).visitDate, "2026-11-04");
-    now = Date.parse("2026-11-04T10:00:00+09:00");
+    now = Date.parse("2026-11-04T09:00:00+09:00");
+    assert.equal(tomorrowWaitingOpening(now).id, "2026-11-05:am:10:00");
+    assert.equal(tomorrowWaitingOpening(now).closed, true);
     assert.throws(() => store.schedule(request()), /WAITING_OPENING_CHANGED/);
-    assert.equal(store.schedule(request({ openingId: "2026-11-04:pm:16:00" })).slot, "pm");
-    now = Date.parse("2026-11-04T16:00:00+09:00");
-    assert.equal(nextWaitingOpening(now).id, "2026-11-06:am:10:00");
-    assert.throws(() => store.schedule(request({ openingId: "2026-11-06:am:10:00" })), /WAITING_REGISTRATION_NOT_OPEN/);
-    now = Date.parse("2026-11-05T00:00:00+09:00");
+    assert.throws(() => store.schedule(request({ openingId: "2026-11-05:am:10:00" })), /WAITING_CLOSED_DAY/);
+    now = Date.parse("2026-11-05T23:59:59+09:00");
     assert.equal(store.schedule(request({ openingId: "2026-11-06:am:10:00" })).visitDate, "2026-11-06");
+    now = Date.parse("2026-11-06T00:00:00+09:00");
+    assert.equal(tomorrowWaitingOpening(now).id, "2026-11-07:am:10:00");
+    assert.throws(() => store.schedule(request({ openingId: "2026-11-06:am:10:00" })), /WAITING_OPENING_CHANGED/);
   } finally { store.close(); }
 });
 
@@ -122,7 +124,7 @@ test("submission ambiguity and restarts cannot silently retry a waiting registra
     await scheduler.tick(); assert.equal(store.job(job.id).state, "UNKNOWN");
     await scheduler.tick(); store.recover(); assert.equal(runner.calls, 1);
     now = base;
-    assert.throws(() => store.schedule(request()), /WAITING_ALREADY_EXISTS/);
+    assert.throws(() => store.schedule(request()), /WAITING_STATE_CHANGED/);
     const second = store.schedule(request({ phoneNumber: "01000005678" }));
     store.transition(second.id, ["SCHEDULED"], "RUNNING"); store.transition(second.id, ["RUNNING"], "SUBMITTING");
     store.recover(); assert.equal(store.job(second.id).state, "UNKNOWN");
@@ -137,8 +139,9 @@ test("cancelled and expired requests never open the provider; missed deadlines d
     now = cancelled.opensAt; await scheduler.tick(); assert.equal(runner.calls, 0);
     now = base; const morning = store.schedule(request());
     now = morning.deadline + 1; await scheduler.tick(); assert.equal(store.job(morning.id).state, "EXPIRED");
-    const afternoon = store.schedule(request({ openingId: "2026-11-04:pm:16:00" }));
-    now = afternoon.runsAt; await scheduler.tick(); assert.equal(store.job(afternoon.id).state, "SUCCEEDED");
+    now = Date.parse("2026-11-05T21:00:00+09:00");
+    const later = store.schedule(request({ openingId: "2026-11-06:am:10:00" }));
+    now = later.runsAt; await scheduler.tick(); assert.equal(store.job(later.id).state, "SUCCEEDED");
     assert.equal(runner.calls, 1);
   } finally { await scheduler.close(); store.close(); }
 });
@@ -168,14 +171,14 @@ test("waiting-only service persists future requests across restart and executes 
     const address = service.server.address() as { port: number };
     const origin = `http://127.0.0.1:${address.port}`;
     assert.equal((await fetch(origin + "/healthz")).status, 200);
-    assert.equal((await fetch(origin + "/", { redirect: "manual" })).headers.get("location"), "/waiting");
+    assert.equal((await fetch(origin + "/")).status, 200);
     assert.equal((await fetch(origin + "/api/auth/ensure", { method: "POST" })).status, 404);
     assert.equal((await fetch(origin + "/vendor/novnc/core/rfb.js")).status, 404);
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
     const link = await fetch(origin + "/api/console/link", { method: "POST", headers }).then(r => r.json()) as { url: string };
-    assert.equal(new URL(link.url).pathname, "/waiting");
+    assert.equal(new URL(link.url).pathname, "/");
     const response = await fetch(origin + "/api/app/waiting", { method: "POST", headers, body: JSON.stringify(request()) });
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 200);
     const saved = (await response.json() as { job: { id: string; runsAt: number } }).job;
     assert.equal(runner.prepares, 0);
     await service.stop();
@@ -215,13 +218,22 @@ test("waiting API shares owner authentication, rejects CSRF, and exposes no cont
     const secret = new URLSearchParams(new URL(link.url).hash.slice(1)).get("token");
     const exchanged = await post("/api/console/exchange", { token: secret }, { origin: config.origin });
     const cookie = exchanged.headers.get("set-cookie")!.split(";")[0], headers = { cookie, origin: config.origin };
+    const friendLink = await post("/api/console/link", {}, { authorization: `Bearer ${token}` }).then(r => r.json()) as {url:string};
+    const friendToken = new URLSearchParams(new URL(friendLink.url).hash.slice(1)).get("token");
+    const friend = await post("/api/console/exchange", {token:friendToken}, {origin:config.origin});
+    const friendCookie = friend.headers.get("set-cookie")!.split(";")[0];
+    assert.equal((await fetch(config.origin + "/api/app/console", {headers:{cookie:friendCookie}})).status, 200);
+    assert.equal((await fetch(config.origin + "/api/app/console", {headers})).status, 200);
+    assert.equal((await post("/api/console/exchange", {token:friendToken}, {origin:config.origin})).status, 401);
     assert.equal((await post("/api/app/waiting", request(), { cookie })).status, 403);
     const overview = await fetch(config.origin + "/api/app/waiting", { headers }).then(r => r.json()) as { nextOpening: { id: string } };
     assert.equal(overview.nextOpening.id, "2026-11-04:am:10:00");
-    const created = await post("/api/app/waiting", request(), headers); assert.equal(created.status, 201);
+    const created = await post("/api/app/waiting", request(), headers); assert.equal(created.status, 200);
     const text = await created.text(); assert.equal(text.includes(phone), false); assert.equal(text.includes("phoneCiphertext"), false);
     const id = (JSON.parse(text) as { job: { id: string } }).job.id;
-    assert.equal((await post("/api/app/waiting", request(), headers)).status, 409);
+    assert.equal((await post("/api/app/waiting", request({ partySize: 4 }), headers)).status, 200);
+    const changed = await post(`/api/app/waiting/${id}/resize`, { openingId: "2026-11-04:am:10:00", partySize: 5, confirmed: true }, {cookie:friendCookie, origin:config.origin});
+    assert.equal(changed.status, 200); assert.equal((await changed.json() as {job:{partySize:number}}).job.partySize, 5);
     assert.equal((await post(`/api/app/waiting/${id}/cancel`, {}, headers)).status, 200);
     const list = await fetch(config.origin + "/api/app/waiting", { headers }).then(r => r.text());
     assert.equal(list.includes(phone), false); assert.equal(list.includes("phoneCiphertext"), false);

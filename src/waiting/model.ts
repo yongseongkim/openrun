@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { AppError } from "../app/store.ts";
-import { NANIYORI, nextWaitingOpening, WAITING_TIMING } from "./config.ts";
+import { NANIYORI, tomorrowWaitingOpening, WAITING_TIMING } from "./config.ts";
 import type { waitingCatalog } from "./config.ts";
 import type { WaitingSlot } from "./config.ts";
 
@@ -24,6 +24,7 @@ export interface WaitingRepository {
   jobs(): Awaitable<WaitingJob[]>;
   pending(): Awaitable<WaitingJob[]>;
   schedule(input: Record<string, unknown>): Awaitable<WaitingJob>;
+  resize(id: string, input: Record<string, unknown>): Awaitable<WaitingJob>;
   phone(id: string): Awaitable<string>;
   transition(id: string, from: WaitingState[], state: WaitingState, patch?: WaitingPatch): Awaitable<WaitingJob>;
   cancel(id: string): Awaitable<WaitingJob>;
@@ -55,14 +56,21 @@ export class WaitingContactCipher {
   close() { this.#key.fill(0); }
 }
 
-export function createWaitingJob(input: Record<string, unknown>, now: number, cipher: WaitingContactCipher): PrivateWaitingJob {
+export function waitingOpening(input: Record<string, unknown>, now: number) {
   if (input.confirmed !== true) throw new AppError("WAITING_CONFIRMATION_REQUIRED");
   if (input.restaurantId !== undefined && input.restaurantId !== NANIYORI.id) throw new AppError("INVALID_WAITING_RESTAURANT");
-  const opening = nextWaitingOpening(now);
+  const opening = tomorrowWaitingOpening(now);
   if (input.openingId !== opening.id) throw new AppError("WAITING_OPENING_CHANGED", 409);
-  if (!opening.canRegister) throw new AppError("WAITING_REGISTRATION_NOT_OPEN", 409);
-  const partySize = Number(input.partySize);
+  if (!opening.canRegister) throw new AppError("WAITING_CLOSED_DAY", 409);
+  return opening;
+}
+export function waitingPartySize(value: unknown): number {
+  const partySize = Number(value);
   if (!Number.isInteger(partySize) || partySize < 1 || partySize > NANIYORI.maxPartySize) throw new AppError("INVALID_PARTY_SIZE");
+  return partySize;
+}
+export function createWaitingJob(input: Record<string, unknown>, now: number, cipher: WaitingContactCipher): PrivateWaitingJob {
+  const opening = waitingOpening(input, now), partySize = waitingPartySize(input.partySize);
   if (typeof input.phoneNumber !== "string" || !/^[0-9 -]{10,20}$/.test(input.phoneNumber)) throw new AppError("INVALID_WAITING_PHONE");
   const phone = input.phoneNumber.replace(/[ -]/g, "");
   if (!/^01[016789]\d{7,8}$/.test(phone)) throw new AppError("INVALID_WAITING_PHONE");

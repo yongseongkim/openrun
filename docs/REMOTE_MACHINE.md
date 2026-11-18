@@ -2,7 +2,7 @@
 
 ## OCI에서 나니요리만 실행
 
-현재 우선 배포 대상은 **기존 OCI k3s + 공용 PostgreSQL의 `openrun` 전용 DB**입니다. 앱은 캐치테이블 계정·Chrome 프로필·VNC·앱 데이터 PVC 없이 `/waiting` 웹 신청과 시럽 스케줄러만 실행합니다. DB에 저장한 날짜·시간대만 실행하며 매일 무조건 웨이팅을 넣는 반복 설정은 없습니다. 기존 Lambda/SSM을 호출하지 않습니다. DB 역할·스키마·백업은 [PostgreSQL 안내](POSTGRESQL.md)를 먼저 따릅니다.
+현재 우선 배포 대상은 **기존 OCI k3s + 공용 PostgreSQL의 `openrun` 전용 DB**입니다. 앱은 캐치테이블 계정·Chrome 프로필·VNC·앱 데이터 PVC 없이 `/`의 나니요리 탭과 시럽 스케줄러만 실행합니다. DB에 저장한 날짜·시간대만 실행하며 매일 무조건 웨이팅을 넣는 반복 설정은 없습니다. 기존 Lambda/SSM을 호출하지 않습니다. DB 역할·스키마·백업은 [PostgreSQL 안내](POSTGRESQL.md)를 먼저 따릅니다.
 
 k3s에서는 `DATABASE_URL`, `OPENRUN_ADMIN_TOKEN`, 필요한 경우 `SLACK_WEBHOOK_URL`을 SOPS로 관리하는 Kubernetes Secret에서 환경 변수로 주입합니다. 앱 Pod는 1개, 배포 전략은 `Recreate`로 두고 migration Job을 먼저 완료합니다. DB 주소 `postgres.database.svc.cluster.local:5432`는 클러스터 내부에서 사용합니다. OpenRun의 Helm/ArgoCD 배포 연결과 운영 DB 생성은 이 코드 변경에서 자동 수행하지 않습니다.
 
@@ -29,9 +29,9 @@ docker compose -f compose.waiting.yaml ps
 docker compose -f compose.waiting.yaml exec -T waiting npm run waiting:open
 ```
 
-시럽 전용 이미지에는 Node/SOPS/Chromium이 있고 가상 데스크톱 실행기는 없습니다. 출력된 1회용 관리 링크를 PC·휴대폰에서 열고 **나의 웨이팅 열기**로 접속합니다. 만료됐거나 서비스가 재시작되면 마지막 명령으로 새 링크를 발급합니다. HTTPS는 아래 **3. 이미지 시작과 HTTPS**의 Caddy 설정을 적용합니다. 공개 도메인을 준비하기 전에는 같은 절의 SSH 터널로 테스트할 수 있습니다.
+시럽 전용 이미지에는 Node/SOPS/Chromium이 있고 가상 데스크톱 실행기는 없습니다. 출력된 1회용 관리 링크를 PC·휴대폰에서 열고 **OpenRun 열기**로 접속합니다. 만료됐거나 서비스가 재시작되면 마지막 명령으로 새 링크를 발급합니다. HTTPS는 아래 **3. 이미지 시작과 HTTPS**의 Caddy 설정을 적용합니다. 공개 도메인을 준비하기 전에는 같은 절의 SSH 터널로 테스트할 수 있습니다.
 
-웹은 매장 설정의 다음 접수 시간 한 번과 그 명부만 보여줍니다. 접수 전날부터 인원수·전화번호를 등록하고, 접수 전에는 삭제할 수 있습니다. 날짜·오전/오후·상태·Slack 선택 화면은 없습니다. 오전이면 09:58에 브라우저를 준비하고 10:00:01부터, 오후는 15:58/16:00:01에 동작합니다. 실행 기록과 결과는 DB에 보관합니다. 서비스는 매일 DB를 확인하며 작업이 없으면 브라우저를 띄우지 않고 완료·삭제 후에도 닫습니다.
+OpenRun 한 페이지의 가게 탭을 사용합니다. 나니요리는 내일 오전 10시 명부에 인원수·전화번호를 저장하며, 같은 번호로 다시 신청하거나 행의 인원 수정으로 기존 신청을 바꿀 수 있습니다. 함께 갈 사람과 연락한 뒤 수정하는 사용 방식입니다. 휴무 예정일은 명부를 비활성화하고 다음 영업일로 자동 이동하지 않습니다. 09:58에 브라우저를 준비하고 10:00:01부터 시도합니다. 실행 기록과 결과는 DB에 보관하며, 작업이 없으면 브라우저를 띄우지 않습니다. 이미 저장된 이전 요청은 원래 시각을 유지합니다.
 
 Compose의 `restart: unless-stopped`는 컨테이너 종료·Docker 재시작 후 서비스를 다시 실행합니다. 운영자가 명시적으로 정지한 서비스는 자동으로 다시 켜지지 않습니다. [Docker 재시작 정책](https://docs.docker.com/engine/containers/start-containers-automatically/)과 같습니다. `healthz`는 HTTP 프로세스 상태이며 시럽의 실제 접수 성공을 뜻하지 않습니다. 일회성 접수는 `SCHEDULED` DB 상태를 기준으로 실행하고, 제출 결과가 불확실한 요청은 재시작 후에도 반복하지 않습니다.
 

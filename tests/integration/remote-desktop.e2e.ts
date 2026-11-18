@@ -1,3 +1,4 @@
+import { WaitingStore } from "../../src/waiting/store.ts";
 // Run inside the Docker image: genuine Chrome + Xvfb + x11vnc + noVNC.
 // Every restaurant/provider request is intercepted; no real account or Slack is used.
 import assert from "node:assert/strict";
@@ -62,7 +63,8 @@ let coordinator = new AuthCoordinator(worker, 60_000);
 const store = new AppStore(resolve(temporary, "app.sqlite")); store.seed();
 let now = Date.now();
 const scheduler = new BookingScheduler(store, coordinator, { now: () => now });
-const server = createRemoteServer({ config, coordinator, grants: new GrantStore(), store, adminToken: "fixture-only-admin-key-at-least-32-characters" });
+const waitingStore = new WaitingStore(":memory:", "fixture-only-admin-key-at-least-32-characters");
+const server = createRemoteServer({ config, coordinator, grants: new GrantStore(), store, waitingStore, adminToken: "fixture-only-admin-key-at-least-32-characters" });
 server.listen(config.port, "127.0.0.1"); await once(server, "listening");
 const client = await launchBrowser({ headless: true, channel: "chromium" });
 try {
@@ -108,14 +110,31 @@ try {
   // The owner opens the actual management UI and registers an armed request.
   const ownerLink = await fetch(config.origin + "/api/console/link", { method:"POST",headers:{authorization:"Bearer fixture-only-admin-key-at-least-32-characters"} }).then(r=>r.json()) as { url:string };
   await page.goto(ownerLink.url);
-  await page.getByRole("button", { name:"나의 목록 열기",exact:true }).click();
-  await page.locator(".card").first().waitFor();
-  assert.equal(await page.locator(".card").count(),3);
+  await page.getByRole("button", { name:"OpenRun 열기",exact:true }).click();
+  await page.getByRole("tab",{name:"나니요리",exact:true}).waitFor();
+  assert.equal(await page.getByRole("tab").count(),4);
+  assert.equal(await page.locator("#waiting-form input").count(),2);
+  await page.getByRole("tab",{name:"나니요리",exact:true}).focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await page.getByRole("tab").nth(1).getAttribute("aria-selected"),"true");
+  await page.getByRole("tab",{name:"노뜨르",exact:true}).click();
+  await page.locator("#restaurants").getByText(/윤남노/).waitFor();
+  assert.equal(await page.locator("#restaurants .card").count(),1);
+  assert.equal(await page.locator("#restaurants").getByText(/윤남노/).count(),1);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   await page.screenshot({path:resolve(artifacts,"catalog-mobile.png"),fullPage:true});
   await page.setViewportSize({width:1280,height:1000});
   await page.screenshot({path:resolve(artifacts,"catalog-desktop.png"),fullPage:true});
-  await page.getByRole("searchbox").fill("윤남노"); assert.equal(await page.locator(".card").count(),1);
+  await page.getByRole("button",{name:"+ 가게 추가",exact:true}).click();
+  const restaurantForm=page.locator("#restaurant-form");
+  await restaurantForm.locator('[name="name"]').fill("모의 매장");
+  await restaurantForm.locator('[name="url"]').fill("https://app.catchtable.co.kr/ct/shop/fixture");
+  await restaurantForm.getByRole("button",{name:"저장",exact:true}).click();
+  await page.getByRole("tab",{name:"모의 매장",exact:true}).waitFor();
+  assert.equal(await page.getByRole("tab").count(),5);
+  assert.equal(await page.getByRole("tab",{name:"모의 매장",exact:true}).getAttribute("aria-selected"),"true");
+  await page.getByRole("tab",{name:"노뜨르",exact:true}).click();
+  await page.locator("#restaurants").getByText(/윤남노/).waitFor();
   await page.getByRole("button",{name:"예약 요청",exact:true}).click();
   const form=page.locator("#booking-form");
   const visit=new Date(now+30*86400000).toISOString().slice(0,10);
@@ -156,9 +175,9 @@ try {
   assert.equal(await worker.check(), true);
   assert.equal(submissions, 1);
   await worker.close();
-  console.log(JSON.stringify({ status: "REMOTE_E2E_PASSED", realVncInput: true, sameBrowserHandoff: true, restoredAfterBrowserRestart: true, loginSubmissions: submissions, catalogUi: true, scheduledReservationHandoff: true, liveReservations: 0 }));
+  console.log(JSON.stringify({ status: "REMOTE_E2E_PASSED", realVncInput: true, sameBrowserHandoff: true, restoredAfterBrowserRestart: true, loginSubmissions: submissions, catalogUi: true, restaurantTabs: true, storeAddedAsTab: true, scheduledReservationHandoff: true, liveReservations: 0 }));
 } finally {
-  await scheduler.close(); await client.close(); await coordinator.close(); await worker.close(); store.close();
+  await scheduler.close(); await client.close(); await coordinator.close(); await worker.close(); store.close(); waitingStore.close();
   server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(temporary, { recursive: true, force: true });
 }

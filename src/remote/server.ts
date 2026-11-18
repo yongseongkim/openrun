@@ -97,24 +97,33 @@ export function createRemoteServer(options: {
       if (request.method === "POST" && url.pathname === "/api/console/link") {
         administrator(request);
         const token = owners.mint("owner", Date.now() + 600_000);
-        return json(response, 200, { url: `${config.origin}${coordinator ? "/" : "/waiting"}#token=${token}` });
+        return json(response, 200, { url: `${config.origin}/#token=${token}` });
       }
       if (request.method === "POST" && url.pathname === "/api/console/exchange") {
         origin(request);
         const body = await jsonBody(request);
         if (typeof body.token !== "string" || body.token.length > 128) throw new HttpError(400, "INVALID_LINK");
-        const session = owners.exchange("owner", body.token, Date.now() + 12 * 3600000);
+        const session = owners.exchange("owner", body.token, Date.now() + 12 * 3600000, { replaceExisting: false });
         if (!session) throw new HttpError(401, "LINK_EXPIRED_OR_USED");
         setCookie(response, OWNER_COOKIE, session.cookie, session.expiresAt);
         return json(response, 200, { expiresAt: session.expiresAt });
       }
       if (url.pathname.startsWith("/api/app")) {
         owner(request, request.method !== "GET");
+        if (request.method === "GET" && url.pathname === "/api/app/console") return json(response, 200, {
+          restaurants: [
+            ...(options.waitingStore ? [{ id: options.waitingStore.catalog().restaurant.id, name: options.waitingStore.catalog().restaurant.name, kind: "waiting" }] : []),
+            ...(coordinator && options.store ? options.store.restaurants().map(restaurant => ({ id: restaurant.id, name: restaurant.name, kind: "catchtable" })) : []),
+          ],
+          canAddRestaurant: !!coordinator && !!options.store,
+        });
         if (url.pathname === "/api/app/waiting" || url.pathname.startsWith("/api/app/waiting/")) {
           const waiting = options.waitingStore;
           if (!waiting) throw new HttpError(503, "WAITING_UNAVAILABLE");
           if (request.method === "GET" && url.pathname === "/api/app/waiting") return json(response, 200, { ...waiting.catalog(), jobs: await waiting.jobs(), timezone: "Asia/Seoul", features: { catchtable: !!coordinator && !!options.store } });
-          if (request.method === "POST" && url.pathname === "/api/app/waiting") return json(response, 201, { job: await waiting.schedule(await jsonBody(request)) });
+          if (request.method === "POST" && url.pathname === "/api/app/waiting") return json(response, 200, { job: await waiting.schedule(await jsonBody(request)) });
+          const resize = url.pathname.match(/^\/api\/app\/waiting\/([a-f0-9-]{36})\/resize$/);
+          if (request.method === "POST" && resize) return json(response, 200, { job: await waiting.resize(resize[1], await jsonBody(request)) });
           const cancel = url.pathname.match(/^\/api\/app\/waiting\/([a-f0-9-]{36})\/cancel$/);
           if (request.method === "POST" && cancel) { await jsonBody(request); return json(response, 200, { job: await waiting.cancel(cancel[1]) }); }
           throw new HttpError(404, "NOT_FOUND");
@@ -197,12 +206,11 @@ export function createRemoteServer(options: {
       }
 
       if (request.method !== "GET") throw new HttpError(405, "METHOD_NOT_ALLOWED");
-      if (url.pathname === "/" && !coordinator) { response.writeHead(302, { location: "/waiting" }); response.end(); return; }
+      if (url.pathname === "/waiting") { response.writeHead(302, { location: `/${url.search}` }); response.end(); return; }
       let filename: string | undefined;
       if (url.pathname === "/") filename = resolve(ROOT, "public/index.html");
-      else if (url.pathname === "/waiting") filename = resolve(ROOT, "public/waiting.html");
       else if (coordinator && /^\/login\/[a-f0-9-]{36}$/.test(url.pathname)) filename = resolve(ROOT, "public/viewer.html");
-      else if (["/assets/viewer.js", "/assets/style.css", "/assets/app.js", "/assets/app.css", "/assets/waiting.js", "/assets/waiting.css"].includes(url.pathname)) filename = resolve(ROOT, "public", url.pathname.slice("/assets/".length));
+      else if (["/assets/viewer.js", "/assets/style.css", "/assets/console.js", "/assets/app.js", "/assets/app.css", "/assets/waiting.js", "/assets/waiting.css"].includes(url.pathname)) filename = resolve(ROOT, "public", url.pathname.slice("/assets/".length));
       else if (coordinator && url.pathname.startsWith("/vendor/novnc/")) {
         const relative = decodeURIComponent(url.pathname.slice("/vendor/novnc/".length));
         if (!/^(core|vendor)\/[a-zA-Z0-9_./-]+\.(js|wasm)$/.test(relative) || relative.split("/").includes("..")) throw new HttpError(404, "NOT_FOUND");

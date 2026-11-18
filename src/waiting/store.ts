@@ -5,7 +5,7 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { AppError } from "../app/store.ts";
 import { waitingCatalog } from "./config.ts";
-import { WaitingContactCipher, createWaitingJob, publicWaitingJob } from "./model.ts";
+import { WaitingContactCipher, createWaitingJob, publicWaitingJob, waitingOpening, waitingPartySize } from "./model.ts";
 import type { WaitingJob, WaitingState, PrivateWaitingJob, WaitingPatch, WaitingRepository } from "./model.ts";
 export type { WaitingJob, WaitingState, WaitingResult } from "./model.ts";
 
@@ -38,10 +38,27 @@ export class WaitingStore implements WaitingRepository {
     try {
       const phone = this.#cipher.decrypt(item);
       const entries = this.#db.prepare("SELECT body FROM waiting_jobs WHERE restaurant_id=? AND visit_date=? AND slot=? AND state NOT IN ('CANCELLED','FAILED','EXPIRED')").all(item.restaurantId, item.visitDate, item.slot);
-      if (entries.some(row => this.#cipher.decrypt(JSON.parse(row.body as string)) === phone)) throw new AppError("WAITING_ALREADY_EXISTS", 409);
+      const previous = entries.map(row => JSON.parse(row.body as string) as PrivateWaitingJob).find(row => this.#cipher.decrypt(row) === phone);
+      if (previous) {
+        const updated = this.#resize(previous, input);
+        this.#db.exec("COMMIT"); return updated;
+      }
       this.#db.prepare("INSERT INTO waiting_jobs VALUES (?, ?, ?, ?, ?, ?, ?)").run(item.id, item.restaurantId, item.visitDate, item.slot, item.state, item.opensAt, JSON.stringify(item));
       this.#db.exec("COMMIT"); return publicWaitingJob(item);
     } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+  }
+  #resize(previous: PrivateWaitingJob, input: Record<string, unknown>): WaitingJob {
+    const opening = waitingOpening(input, this.#now()), partySize = waitingPartySize(input.partySize);
+    if (previous.opensAt !== opening.opensAt) throw new AppError("WAITING_OPENING_CHANGED", 409);
+    if (previous.state !== "SCHEDULED") throw new AppError("WAITING_STATE_CHANGED", 409);
+    const updated = { ...previous, partySize, updatedAt: this.#now() };
+    this.#db.prepare("UPDATE waiting_jobs SET body=? WHERE id=?").run(JSON.stringify(updated), previous.id);
+    return publicWaitingJob(updated);
+  }
+  resize(id: string, input: Record<string, unknown>): WaitingJob {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try { const updated = this.#resize(this.#private(id), input); this.#db.exec("COMMIT"); return updated; }
+    catch (error) { this.#db.exec("ROLLBACK"); throw error; }
   }
   phone(id: string): string { return this.#cipher.decrypt(this.#private(id)); }
   transition(id: string, from: WaitingState[], state: WaitingState, patch: WaitingPatch = {}): WaitingJob {

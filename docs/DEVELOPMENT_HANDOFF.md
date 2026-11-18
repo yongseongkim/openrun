@@ -1,14 +1,14 @@
-# 개발 인계 — 2026-11-18
+# 개발 인계 — 2026-11-19
 
 ## 현재 우선순위: OCI의 나니요리 시럽 웨이팅
 
-캐치테이블의 추가 자동화는 미루고 나니요리 웹 신청과 DB 기반 실행을 먼저 운영합니다. 기존 `homelab-infra`의 OCI k3s와 공용 PostgreSQL을 사용하며 `openrun` 전용 DB·계정을 두는 구성이 기준입니다. Docker target `waiting` / `src/waiting/main.ts`는 캐치테이블 없이 웹·API·PostgreSQL·스케줄러를 연결합니다. 화면은 다음 접수 명부 하나와 인원수·전화번호 두 입력만 제공하며, 접수 전날부터 명부를 작성합니다. 날짜·슬롯은 서버가 정하고, 기존 Lambda처럼 09:58/15:58에 Chromium을 준비하고 10:00:01/16:00:01부터 시도합니다. 신청이 없는 날에는 접수하지 않습니다.
+캐치테이블의 추가 자동화는 미루고 나니요리 웹 신청과 DB 기반 실행을 먼저 운영합니다. 기존 `homelab-infra`의 OCI k3s와 공용 PostgreSQL을 사용하며 `openrun` 전용 DB·계정을 두는 구성이 기준입니다. Docker target `waiting` / `src/waiting/main.ts`는 캐치테이블 없이 웹·API·PostgreSQL·스케줄러를 연결합니다. 화면은 `/` 하나에 가게 탭을 표시합니다. 나니요리는 내일 오전 10시 명부와 인원수·전화번호 두 입력만 제공합니다. 같은 번호의 재신청과 행별 인원 수정을 지원하며, 지인끼리 연락 후 수정하는 사용 방식입니다. 09:58에 Chromium을 준비하고 10:00:01부터 시도합니다. 신청이 없는 날에는 접수하지 않습니다.
 
 신청(`waiting_requests`)과 실행 이력(`waiting_attempts`)을 트랜잭션으로 저장합니다. 전용 DB 세션의 advisory lock을 얻은 서버만 복구·실행하며 연결을 잃으면 브라우저와 서비스를 중단합니다. 준비 후 취소·실행 완료 시 브라우저를 닫고, 재시작 후 미실행 미래 일정은 이어 처리합니다. `DATABASE_URL`이 필수이며 `waiting:db:migrate`를 먼저 적용합니다. [DB 역할·마이그레이션 안내](POSTGRESQL.md)와 [OCI 시럽 전용 안내](REMOTE_MACHINE.md#oci에서-나니요리만-실행)를 따릅니다. 운영 공용 DB 생성·기존 SQLite 이관·Helm/ArgoCD 연결·Lambda 중지·실제 웨이팅 등록은 수행하지 않았습니다.
 
 ## 목표와 현재 범위
 
-절전되는 로컬 PC 대신 항상 실행되는 원격 Linux 머신에서 서비스를 운영하고 개발을 이어갑니다. 전체 목적은 여러 업체의 식당 예약·웨이팅 신청과 접수 시각 실행을 통합하는 것입니다. 캐치테이블은 **예약 화면 준비 + 같은 서버 브라우저의 원격 인계**, 시럽프렌즈 나니요리는 **다음 접수 명부 + 지정 시각 자동 제출·결과 저장**까지 구현했습니다. 캐치테이블 최종 예약 확정·결제와 공급자 취소는 아직 자동화하지 않았습니다.
+절전되는 로컬 PC 대신 항상 실행되는 원격 Linux 머신에서 서비스를 운영하고 개발을 이어갑니다. 전체 목적은 여러 업체의 식당 예약·웨이팅 신청과 접수 시각 실행을 통합하는 것입니다. 캐치테이블은 **예약 화면 준비 + 같은 서버 브라우저의 원격 인계**, 시럽프렌즈 나니요리는 **내일 오전 명부 + 인원 수정 + 지정 시각 자동 제출·결과 저장**까지 구현했습니다. 캐치테이블 최종 예약 확정·결제와 공급자 취소는 아직 자동화하지 않았습니다.
 
 전체 목적과 구조는 README/AGENTS에 두고, 업체별 세부 동작은 [캐치테이블](CATCHTABLE.md), [나니요리](SYRUP_WAITING.md)에 기록합니다.
 
@@ -27,9 +27,9 @@
 | 중복 방지 | 하나의 계정·브라우저를 직렬 사용. 겹치는 10분 실행 구간 거부. 원자적 상태 전이. 진행 중 재시작은 내역 확인 상태로 전환 |
 | Slack | SOPS의 Incoming Webhook 사용. 요청에서 알림을 선택한 경우 로그인/예약 화면 링크 발송. 알림 실패로 브라우저 동작을 반복하지 않음 |
 | 저장 | 운영 시럽은 PostgreSQL. 기존 캐치테이블 통합 모드와 명시적 로컬 모의 테스트는 SQLite. 연락처 암호화 형식은 공통 |
-| 나니요리 | 원본 봇의 입력·확인·최종 제출·결과 추출 이관. 다음 접수 명부에 인원수·전화번호 입력, 실행 전 삭제. 시럽 전용 상시 실행 지원 |
+| 나니요리 | 원본 봇의 입력·확인·최종 제출·결과 추출 이관. 내일 오전 10시 명부, 같은 번호 재신청으로 인원 갱신, 행별 수정·삭제. 시럽 전용 상시 실행 지원 |
 | 시럽 연락처 | 관리 키에서 파생한 키로 AES-GCM 암호화. 마스킹 번호만 API 반환 |
-| 시럽 중복 방지 | 회차별 명부 쓰기 직렬화와 같은 전화번호 중복 차단, 단일 DB 세션 실행권, 상태·이력 동시 커밋, 최종 제출 전 SUBMITTING, 불확실 시 UNKNOWN |
+| 시럽 중복 방지 | 회차별 저장 직렬화, 같은 전화번호는 기존 행 갱신, 인원 수정과 claim 행 잠금, 단일 DB 세션 실행권, 상태·이력 동시 커밋, 최종 제출 전 SUBMITTING, 불확실 시 UNKNOWN |
 
 아래 예약 준비 흐름과 원격 인계 설명은 캐치테이블에 해당합니다. 시럽의 상태 흐름·인원·연락처·자동 접수는 [나니요리 문서](SYRUP_WAITING.md)를 따릅니다.
 
@@ -51,7 +51,7 @@
 - Slack Webhook을 SOPS에 등록해 실행 중 서비스에 반영했습니다. 사용자가 허용한 연결 확인 메시지 1회를 전송했고 사용자가 수신을 확인했습니다. 이 허용은 다음 테스트 메시지의 발송 지시가 아닙니다.
 - 마지막으로 확인한 운영 DB는 매장 3곳, 예약 요청 0건입니다. 실제 예약·결제를 생성하지 않았습니다.
 - 원격 접속 주소는 아직 `http://localhost:4340`입니다. 휴대폰의 Slack 링크 접속에 사용할 HTTPS 주소는 미설정입니다.
-- 별도의 로컬 화면 미리보기는 `http://localhost:4341/waiting`입니다. 임시 PostgreSQL과 별도 관리 키를 사용하고 실제 접수 스케줄러·Slack은 꺼져 있습니다. 기존 4340 서비스와 데이터는 변경하지 않았습니다.
+- 별도의 로컬 화면 미리보기는 `http://localhost:4341/`입니다. 임시 PostgreSQL과 별도 관리 키를 사용하고 실제 접수 스케줄러·Slack은 꺼져 있습니다. 기존 4340 서비스와 데이터는 변경하지 않았습니다.
 - 사용자는 **노뜨르와 베수비오 모두 2026-11-28(토) 저녁**을 목표로 정했습니다. **인원과 허용 가능한 시작 시간대는 아직 답변 전**입니다. 임의로 2명/18시 등을 확정하지 마세요.
 - 테스트 예약도 무료 취소가 보장되지 않습니다. 해당 예약 상품의 100% 환불 가능 시각·예약금·노쇼/취소 조건을 확정 전에 확인해야 합니다. 두 매장의 11/28 예약분 취소 수수료표는 아직 확인하지 못했습니다.
 
@@ -78,14 +78,15 @@
 | `src/remote/grants.ts`, `src/remote/server.ts` | 1회용 권한, 소유자 API, 정적 UI, 인증된 WebSocket→VNC |
 | `src/remote/slack.ts`, `src/remote/command.ts` | Slack 발송, 원격 로그인 요청과 관리 링크 CLI |
 | `src/app/catalog.ts`, `src/app/store.ts` | 초기 3개 매장, SQLite와 요청 상태 전이 |
-| `src/waiting/config.ts`, `src/waiting/store.ts` | 다음 접수·KST 전날 신청 기준, 로컬 SQLite 명부 저장 |
+| `src/waiting/config.ts`, `src/waiting/store.ts` | KST 내일 오전 접수 기준, 로컬 SQLite 명부 저장 |
 | `src/waiting/model.ts`, `src/waiting/postgres-store.ts` | 공통 검증·암호화·저장소 인터페이스, PostgreSQL 신청·실행 이력과 실행권 |
 | `src/waiting/database.ts`, `src/waiting/migrate.ts`, `src/waiting/migrations/` | PostgreSQL 풀·설정·버전 SQL migration |
 | `src/waiting/syrup.ts`, `src/waiting/scheduler.ts` | 원본 나니요리 접수 흐름, 단건 실행·제출 경계·결과 알림 |
 | `src/waiting/service.ts`, `src/waiting/main.ts`, `compose.waiting.yaml` | PostgreSQL 기반 시럽 전용 서비스. 앱 데이터 볼륨 불필요 |
-| `public/waiting.*` | 소유자 전용 다음 접수 명부·두 입력 필드·실행 전 삭제 |
+| `public/console.js`, `public/index.html` | OpenRun 단일 페이지, 가게 탭, 공유 관리 인증 |
+| `public/waiting.*` | 내일 오전 명부·동일 번호 재신청·행별 인원 수정·삭제 |
 | `src/app/scheduler.ts` | 로그인 사전 확인, 시각에 맞춘 페이지 준비, 만료·인계 |
-| `public/app.*`, `public/index.html` | 매장·예약 요청 관리 화면 |
+| `public/app.js` | 매장·예약 요청 관리 화면 |
 | `public/viewer.*`, `public/style.css` | noVNC viewer와 모바일 입력 |
 | `Dockerfile`, `deploy/entrypoint.sh`, `compose.yaml` | 고정 버전 이미지, 가상 화면, persistent volume |
 | `deploy/Caddyfile.example` | 같은 머신의 TLS/WebSocket reverse proxy 예제 |
@@ -112,7 +113,7 @@ docker run --rm --shm-size=1g \
   openrun-remote:local node tests/integration/remote-desktop.e2e.ts
 ```
 
-이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. `tests/integration/waiting.e2e.ts`는 관리 링크·미래 날짜 신청·취소·2분 전 준비·정각 1초 뒤 모의 접수·결과 표시를 검증합니다. `waiting-daemon.e2e.ts`는 실제 진입점·내부 CLI·프로세스 재시작 후 DB 복원을 확인합니다. `npm run test:postgres`는 임시 PostgreSQL 18을 만들어 10개 저장소/트랜잭션/실행권/최소 권한 테스트와 두 시럽 통합 테스트를 실행합니다. 기존 `npm test` 43개와 원격 데스크톱 통합 테스트도 유지합니다. 외부 응답은 모의 처리하며 실제 예약이나 Slack 메시지를 만들지 않습니다. GitHub Actions CI는 사용하지 않습니다. [PostgreSQL 검증 안내](POSTGRESQL.md#백업이관과-테스트)를 참고합니다.
+이 통합 테스트는 실제 Chrome·Xvfb·x11vnc·noVNC로 키 입력 전달, 모바일 화면, 관리 화면 일정 등록, 예약 화면 인계·종료, 브라우저 재시작 후 복원을 확인합니다. `tests/integration/waiting.e2e.ts`는 관리 링크·나니요리 탭·동일 번호 갱신·인원 수정·2분 전 준비·정각 1초 뒤 변경된 인원으로 모의 접수·자정의 오래된 폼 거부를 검증합니다. `waiting-daemon.e2e.ts`는 실제 진입점·내부 CLI·프로세스 재시작 후 DB 복원을 확인합니다. `npm run test:postgres`는 임시 PostgreSQL 18을 만들어 13개 저장소/인원 수정/트랜잭션/실행권/최소 권한 테스트와 두 시럽 통합 테스트를 실행합니다. 기존 `npm test` 43개와 원격 데스크톱 통합 테스트도 유지합니다. 외부 응답은 모의 처리하며 실제 예약이나 Slack 메시지를 만들지 않습니다. GitHub Actions CI는 사용하지 않습니다. [PostgreSQL 검증 안내](POSTGRESQL.md#백업이관과-테스트)를 참고합니다.
 
 ## 원격 머신에서 이어갈 순서
 

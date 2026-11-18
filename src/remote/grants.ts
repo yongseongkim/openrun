@@ -23,14 +23,14 @@ export class GrantStore {
     return token;
   }
 
-  exchange(requestId: string, token: string, sessionExpiresAt?: number): { cookie: string; expiresAt: number } | undefined {
+  exchange(requestId: string, token: string, sessionExpiresAt?: number, options: { replaceExisting?: boolean } = {}): { cookie: string; expiresAt: number } | undefined {
     this.prune();
     const key = digest(token);
     const link = this.#links.get(key);
     if (!link || link.requestId !== requestId || link.expiresAt <= this.#clock()) return undefined;
     this.#links.delete(key);
-    // A new device takes over this request; previous remote-control cookies stop working.
-    for (const [id, session] of this.#sessions) if (session.requestId === requestId) this.#sessions.delete(id);
+    // Remote-control viewers take over; shared management links may coexist.
+    if (options.replaceExisting !== false) for (const [id, session] of this.#sessions) if (session.requestId === requestId) this.#sessions.delete(id);
     const cookie = randomBytes(32).toString("base64url");
     const session = { ...link, expiresAt: sessionExpiresAt ?? link.expiresAt };
     this.#sessions.set(digest(cookie), session);

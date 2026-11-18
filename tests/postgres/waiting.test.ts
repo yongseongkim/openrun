@@ -43,12 +43,11 @@ test("PostgreSQL persists encrypted requests and exact KST times across connecti
   await assert.rejects(store.schedule(input({ openingId: "2026-11-31:am" })), /WAITING_OPENING_CHANGED/);
 }));
 
-test("a roster accepts different phones but concurrent duplicate phones have one winner", () => fixture(async ({ store, make }) => {
+test("concurrent same-phone saves share one row and different phones share the roster", () => fixture(async ({ store, make }) => {
   const other = make();
-  const attempts = await Promise.allSettled([store.schedule(input()), other.schedule(input())]);
-  assert.equal(attempts.filter(item => item.status === "fulfilled").length, 1);
-  const rejected = attempts.find(item => item.status === "rejected") as PromiseRejectedResult;
-  assert.match(rejected.reason.message, /WAITING_ALREADY_EXISTS/);
+  const attempts = await Promise.all([store.schedule(input()), other.schedule(input({ partySize: 4 }))]);
+  assert.equal(attempts[0].id, attempts[1].id);
+  assert.equal((await store.jobs()).length, 1);
   const [original] = await store.jobs();
   // Identical masks still belong to different full phone numbers.
   const another = await other.schedule(input({ phoneNumber: "01099991234" }));
@@ -66,6 +65,48 @@ test("schema migrations serialize, are repeatable, and reject checksum changes",
   assert.equal((await pool.query("SELECT count(*) FROM waiting_requests")).rows[0].count, "0");
 }));
 
+test("party changes keep the same request and cannot edit started or uncertain attempts", () => fixture(async ({store}) => {
+  const job = await store.schedule(input());
+  const changed = await store.resize(job.id, {openingId:input().openingId, partySize:4, confirmed:true});
+  assert.equal(changed.id, job.id); assert.equal(changed.partySize, 4);
+  assert.equal(await store.phone(job.id), phone);
+  await assert.rejects(store.resize(job.id, {openingId:input().openingId, partySize:0, confirmed:true}), /INVALID_PARTY_SIZE/);
+  assert.equal((await store.job(job.id)).partySize, 4);
+  await store.acquireScheduler(); await store.transition(job.id, ["SCHEDULED"], "RUNNING");
+  await assert.rejects(store.schedule(input({partySize:6})), /WAITING_STATE_CHANGED/);
+  await assert.rejects(store.resize(job.id, {openingId:input().openingId, partySize:6, confirmed:true}), /WAITING_STATE_CHANGED/);
+  await store.transition(job.id, ["RUNNING"], "SUBMITTING"); await store.transition(job.id, ["SUBMITTING"], "UNKNOWN");
+  await assert.rejects(store.schedule(input({partySize:6})), /WAITING_STATE_CHANGED/);
+  assert.equal((await store.job(job.id)).partySize, 4);
+  assert.equal((await store.attempts(job.id)).length, 1);
+}));
+
+test("claiming and party edits serialize and the runner reads the claimed party size", () => fixture(async ({store, clock}) => {
+  await store.acquireScheduler(); const job = await store.schedule(input());
+  const stale = await store.pending();
+  await store.resize(job.id, {openingId:input().openingId, partySize:5, confirmed:true});
+  store.pending = async () => stale;
+  let submittedParty = 0;
+  const scheduler = new WaitingScheduler(store, {prepare:async()=>{}, close:async()=>{}, run:async(details,options)=>{
+    submittedParty = details.partySize; await options.beforeSubmit(); return result;
+  }}, {now:()=>clock.now});
+  try { clock.now=job.runsAt; await scheduler.tick(); assert.equal(submittedParty, 5); assert.equal((await store.job(job.id)).state, "SUCCEEDED"); }
+  finally {await scheduler.close();}
+}));
+
+test("a concurrent party edit either commits before claiming or is rejected after it", () => fixture(async ({store}) => {
+  await store.acquireScheduler(); const job = await store.schedule(input());
+  const outcomes = await Promise.allSettled([
+    store.resize(job.id, {openingId:input().openingId, partySize:4, confirmed:true}),
+    store.transition(job.id, ["SCHEDULED"], "RUNNING"),
+  ]);
+  const claimed = outcomes[1]; assert.equal(claimed.status, "fulfilled");
+  if (claimed.status !== "fulfilled") return;
+  assert.equal((await store.job(job.id)).partySize, claimed.value.partySize);
+  if (outcomes[0].status === "fulfilled") assert.equal(claimed.value.partySize, 4);
+  else { assert.match(outcomes[0].reason.message, /WAITING_STATE_CHANGED/); assert.equal(claimed.value.partySize, 2); }
+}));
+
 test("one scheduler owns recovery; restart preserves uncertain submissions and their history", () => fixture(async ({ store, make }) => {
   await store.acquireScheduler();
   const other = make(); await assert.rejects(other.acquireScheduler(), /WAITING_SCHEDULER_BUSY/);
@@ -79,7 +120,7 @@ test("one scheduler owns recovery; restart preserves uncertain submissions and t
   assert.equal((await other.job(first.id)).state, "INTERRUPTED");
   assert.equal((await other.job(second.id)).state, "UNKNOWN");
   assert.equal((await other.attempts(second.id))[0].state, "UNKNOWN");
-  await assert.rejects(other.schedule(input({ phoneNumber: "01000005678" })), /WAITING_ALREADY_EXISTS/);
+  await assert.rejects(other.schedule(input({ phoneNumber: "01000005678" })), /WAITING_STATE_CHANGED/);
 }));
 
 test("competing claims create one attempt; request and attempt changes commit together", () => fixture(async ({ pool, store }) => {

@@ -30,14 +30,15 @@ export class WaitingScheduler {
       if (this.#abort.signal.aborted || this.#now() < job.runsAt) return;
       if ((await this.#store.job(job.id)).state !== "SCHEDULED") continue;
       if (this.#now() >= job.deadline) { await this.#end(await this.#store.transition(job.id, ["SCHEDULED"], "EXPIRED")); continue; }
-      try { await this.#store.transition(job.id, ["SCHEDULED"], "RUNNING"); }
+      let claimed: WaitingJob;
+      try { claimed = await this.#store.transition(job.id, ["SCHEDULED"], "RUNNING"); }
       catch (error) { if (error instanceof AppError && error.message === "WAITING_STATE_CHANGED") continue; throw error; }
       // A per-job signal prevents an expired job from stopping future days.
       const controller = new AbortController();
       const deadline = setTimeout(() => controller.abort(), Math.max(1, job.deadline - this.#now()));
       const stop = () => controller.abort(); this.#abort.signal.addEventListener("abort", stop, { once: true });
       try {
-        const result = await this.#runner.run({ partySize: job.partySize, phoneNumber: await this.#store.phone(job.id) }, {
+        const result = await this.#runner.run({ partySize: claimed.partySize, phoneNumber: await this.#store.phone(job.id) }, {
           signal: controller.signal,
           beforeSubmit: async () => {
             const now = this.#now();
