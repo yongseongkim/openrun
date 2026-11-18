@@ -1,0 +1,3 @@
+creation_rules:
+  - path_regex: (secrets/.*\.enc\.(json|yaml)|\.auth/.*\.enc\.json)$
+    gcp_kms: projects/default-487602/locations/asia-northeast3/keyRings/homelab-secrets/cryptoKeys/sops-key

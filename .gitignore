@@ -1,0 +1,36 @@
+node_modules/
+.cache/
+.tools/
+.playwright-mcp/
+.auth/
+.profiles/
+.runtime/
+.artifacts/
+.agents/
+.codex/
+.aws/
+.env
+.env.*
+!.env.example
+secrets/*
+!secrets/*.example.json
+# Production SOPS documents stay private even though their values are encrypted.
+# Transfer them separately when moving to another machine.
+*.enc.json
+*.enc.yaml
+*.enc.yml
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.tar
+*.tar.gz
+*.tgz
+*.pem
+*.key
+dist/
+*.log
+.DS_Store
+*.swp
+*.swo
+*~
